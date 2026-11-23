@@ -1,0 +1,530 @@
+{% extends "base.html" %}
+{% block title %}Chats — Message{% endblock %}
+
+{% block extra_css %}
+<style>
+  .phone-pane {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .hidden-pane {
+    display: none !important;
+  }
+
+  .card {
+    background-color: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 12px;
+  }
+
+  .me-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    object-fit: cover;
+    background-color: var(--panel-2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .section-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  .chat-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border-radius: 12px;
+    background-color: var(--panel-2);
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+
+  .chat-row.active {
+    border: 1px solid var(--accent);
+  }
+
+  .chat-row:hover {
+    text-decoration: none;
+    background-color: #2a3752;
+  }
+
+  .mobile-input {
+    width: 100%;
+    padding: 9px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background-color: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .friend-card {
+    background-color: var(--panel-2);
+    border-radius: 12px;
+    padding: 10px;
+    margin-bottom: 8px;
+  }
+
+  .friend-btns {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+
+  .btn-xs {
+    padding: 5px 8px;
+    font-size: 11px;
+    border-radius: 8px;
+  }
+
+  .room-box {
+    display: flex;
+    flex-direction: column;
+    background-color: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  .room-top {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    background-color: var(--panel-2);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .search-expand-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+  }
+
+  .search-toggle-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background-color: var(--panel);
+    color: var(--text);
+    font-size: 14px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .search-drawer {
+    display: none;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .search-drawer.open {
+    display: flex;
+  }
+
+  .messages-list {
+    max-height: 330px;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .msg-line {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .msg-card {
+    background-color: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px 10px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .msg-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+
+  .msg-ts {
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .file-privacy-box {
+    margin-top: 6px;
+    padding: 7px 9px;
+    border-radius: 8px;
+    background-color: var(--panel);
+    border: 1px solid var(--border);
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .bottom-composer-dock {
+    position: fixed;
+    bottom: 58px;
+    width: 100%;
+    max-width: 406px;
+    background-color: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 8px 10px;
+    z-index: 35;
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.35);
+  }
+
+  @media (max-width: 430px) {
+    .bottom-composer-dock {
+      max-width: calc(100% - 24px);
+    }
+  }
+
+  .emoji-strip {
+    display: flex;
+    gap: 5px;
+    overflow-x: auto;
+    padding-bottom: 5px;
+    margin-bottom: 6px;
+  }
+
+  .emoji-btn {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 3px 6px;
+    font-size: 13px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .composer-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .composer-send-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+  <!-- PANE 1: CHATS & ACTIVE CONVERSATION -->
+  <div id="pane-chats" class="phone-pane {% if active_tab != 'chats' %}hidden-pane{% endif %}">
+    <div class="card me-row">
+      {% if user.pfp_filename %}
+        <img src="/uploads/{{ user.pfp_filename }}" class="avatar" alt="PFP" />
+      {% else %}
+        <div class="avatar">{{ user.username[0]|upper }}</div>
+      {% endif %}
+      <div>
+        <div style="font-weight: 700; font-size: 14px;">{{ user.username }}</div>
+        <div style="font-size: 12px; color: var(--muted);">Friend #: <strong>{{ user.friend_number }}</strong></div>
+      </div>
+    </div>
+
+    {% if active_room %}
+      <div class="room-box">
+        <div class="room-top">
+          <strong style="font-size: 14px;">{{ active_room_title }}</strong>
+
+          <div class="search-expand-wrap">
+            <form method="GET" action="/" id="search-drawer" class="search-drawer {% if search_q %}open{% endif %}">
+              <input type="hidden" name="room_id" value="{{ active_room.id }}" />
+              <input type="hidden" name="tab" value="chats" />
+              <input type="text" name="search" id="search-input-box" value="{{ search_q }}" placeholder="Search messages..." class="mobile-input" style="width: 140px; padding: 6px 10px;" />
+              <button type="submit" class="btn btn-xs">Go</button>
+              {% if search_q %}
+                <a href="/?room_id={{ active_room.id }}&tab=chats" class="btn btn-xs">✕</a>
+              {% endif %}
+            </form>
+            <button type="button" class="search-toggle-btn" id="search-toggle-btn" title="Search older messages" aria-label="Search older messages">🔍</button>
+          </div>
+        </div>
+
+        <div class="messages-list" id="messages-list">
+          {% for m in messages %}
+            <div class="msg-line">
+              {% if m.sender.pfp_filename %}
+                <img src="/uploads/{{ m.sender.pfp_filename }}" class="avatar" style="width: 32px; height: 32px;" alt="{{ m.sender.username }}" />
+              {% else %}
+                <div class="avatar" style="width: 32px; height: 32px; font-size: 12px;">{{ m.sender.username[0]|upper }}</div>
+              {% endif %}
+
+              <div class="msg-card">
+                <div class="msg-head">
+                  <strong>{{ m.sender.username }}</strong>
+                  <span class="msg-ts">{{ m.time_str }}</span>
+                </div>
+
+                {% if m.body %}
+                  <div style="font-size: 13px; word-break: break-word;">{{ m.body }}</div>
+                {% endif %}
+
+                {% if m.msg_type == "voice" and m.file_filename %}
+                  <div style="margin-top: 6px;">
+                    <audio controls src="/uploads/{{ m.file_filename }}" style="max-width: 100%; height: 32px;"></audio>
+                  </div>
+                {% elif m.msg_type == "file" and m.file_filename %}
+                  <div class="file-privacy-box">
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">🔒 {{ m.original_filename }}</span>
+                    <a href="/uploads/{{ m.file_filename }}?download=1" class="btn btn-xs btn-primary">Save</a>
+                  </div>
+                {% endif %}
+              </div>
+            </div>
+          {% else %}
+            <div style="font-size: 13px; color: var(--muted);">No messages yet.</div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <form class="bottom-composer-dock" method="POST" action="/messages/send/{{ active_room.id }}" enctype="multipart/form-data">
+        <div class="emoji-strip">
+          {% for emo in ["😀", "😂", "❤️", "🔥", "👍", "🙏", "🎉", "😢", "😮", "💯"] %}
+            <button type="button" class="emoji-btn" onclick="insertEmoji('{{ emo }}')">{{ emo }}</button>
+          {% endfor %}
+        </div>
+
+        <div class="composer-controls">
+          <div class="composer-send-row">
+            <input type="text" name="body" id="msg-body" class="mobile-input" placeholder="Message..." />
+            <button type="submit" class="btn btn-primary btn-xs">Send</button>
+          </div>
+          <div class="composer-send-row">
+            <input type="file" name="attachment" id="attachment-input" style="font-size: 11px; color: var(--muted); max-width: 155px;" title="Photo, video, or file up to 20GB" />
+            <input type="file" name="voice_data" id="voice-file-input" accept="audio/*" style="display: none;" />
+            <button type="button" class="btn btn-xs" id="record-btn">🎤 Voice</button>
+            <span id="rec-status" style="font-size: 11px; color: var(--muted);"></span>
+          </div>
+        </div>
+      </form>
+    {% endif %}
+
+    <div class="card">
+      <div class="section-title">DMs &amp; Group Chats</div>
+      {% for item in rooms_sidebar %}
+        <a href="/?room_id={{ item.room.id }}&tab=chats" class="chat-row {% if active_room and active_room.id == item.room.id %}active{% endif %}">
+          {% if item.pfp %}
+            <img src="/uploads/{{ item.pfp }}" class="avatar" alt="{{ item.title }}" />
+          {% else %}
+            <div class="avatar">{{ item.title[0]|upper }}</div>
+          {% endif %}
+          <div>
+            <div style="font-size: 14px; font-weight: 700;">{{ item.title }}</div>
+            <div style="font-size: 11px; color: var(--muted);">{{ "Group Chat" if item.is_group else "Direct Message" }}</div>
+          </div>
+        </a>
+      {% else %}
+        <div style="font-size: 12px; color: var(--muted);">No conversations yet.</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- PANE 2: ADD FRIEND & FRIENDS LIST -->
+  <div id="pane-friends" class="phone-pane {% if active_tab != 'friends' %}hidden-pane{% endif %}">
+    <div class="card">
+      <div class="section-title">Add Friend by Friend Number</div>
+      <form method="POST" action="/friends/add" style="display: flex; gap: 6px;">
+        <input type="text" name="friend_number" placeholder="123456-78" class="mobile-input" required />
+        <button type="submit" class="btn btn-primary btn-xs">Add Friend</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Friends</div>
+      {% for f in friends %}
+        {% set rel = rel_map.get(f.id) %}
+        <div class="friend-card">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            {% if f.pfp_filename %}
+              <img src="/uploads/{{ f.pfp_filename }}" class="avatar" alt="{{ f.username }}" />
+            {% else %}
+              <div class="avatar">{{ f.username[0]|upper }}</div>
+            {% endif %}
+            <div style="min-width: 0;">
+              <div style="font-weight: 700; font-size: 14px;">{{ f.username }} <span style="color: var(--muted); font-size: 11px;">#{{ f.friend_number }}</span></div>
+              <div style="font-size: 12px; color: var(--muted);">{{ f.bio }}</div>
+            </div>
+          </div>
+          <div class="friend-btns">
+            <a href="/dm/{{ f.id }}" class="btn btn-primary btn-xs">DM</a>
+            <form method="POST" action="/friends/action" style="display: flex; gap: 4px; flex-wrap: wrap;">
+              <input type="hidden" name="target_id" value="{{ f.id }}" />
+              <button type="submit" name="action" value="mute" class="btn btn-xs">
+                {{ "Unmute" if rel and rel.muted else "Mute" }}
+              </button>
+              {% if rel and rel.status == "blocked" %}
+                <button type="submit" name="action" value="unblock" class="btn btn-xs">Unblock</button>
+              {% else %}
+                <button type="submit" name="action" value="block" class="btn btn-xs btn-danger">Block</button>
+              {% endif %}
+              <button type="submit" name="action" value="unfriend" class="btn btn-xs btn-danger">Unfriend</button>
+            </form>
+          </div>
+        </div>
+      {% else %}
+        <div style="font-size: 12px; color: var(--muted);">No friends added yet.</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- PANE 3: CREATE GROUP CHAT -->
+  <div id="pane-groups" class="phone-pane {% if active_tab != 'groups' %}hidden-pane{% endif %}">
+    <div class="card">
+      <div class="section-title">Create Group Chat</div>
+      <form method="POST" action="/groups/create">
+        <div style="margin-bottom: 10px;">
+          <input type="text" name="group_name" placeholder="Group name..." class="mobile-input" required />
+        </div>
+        <div style="max-height: 220px; overflow-y: auto; margin-bottom: 12px; font-size: 13px;">
+          {% for f in friends %}
+            <label style="display: flex; align-items: center; gap: 8px; padding: 6px 2px;">
+              <input type="checkbox" name="member_ids" value="{{ f.id }}" />
+              <span>{{ f.username }}</span>
+            </label>
+          {% else %}
+            <div style="font-size: 12px; color: var(--muted);">Add friends first to invite them.</div>
+          {% endfor %}
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%;">Create Group</button>
+      </form>
+    </div>
+  </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  function switchPhoneTab(tabName) {
+    ["chats", "friends", "groups"].forEach((name) => {
+      const pane = document.getElementById("pane-" + name);
+      const tab = document.getElementById("tab-" + name);
+      if (pane) pane.classList.toggle("hidden-pane", name !== tabName);
+      if (tab) tab.classList.toggle("active", name === tabName);
+    });
+    const dock = document.querySelector(".bottom-composer-dock");
+    if (dock) {
+      dock.style.display = tabName === "chats" ? "block" : "none";
+    }
+  }
+
+  switchPhoneTab("{{ active_tab|default('chats') }}");
+
+  const searchToggleBtn = document.getElementById("search-toggle-btn");
+  const searchDrawer = document.getElementById("search-drawer");
+  const searchInputBox = document.getElementById("search-input-box");
+  if (searchToggleBtn && searchDrawer) {
+    searchToggleBtn.addEventListener("click", () => {
+      searchDrawer.classList.toggle("open");
+      if (searchDrawer.classList.contains("open") && searchInputBox) {
+        searchInputBox.focus();
+      }
+    });
+  }
+
+  function insertEmoji(emoji) {
+    const input = document.getElementById("msg-body");
+    if (!input) return;
+    input.value += emoji;
+    input.focus();
+  }
+
+  const msgList = document.getElementById("messages-list");
+  if (msgList) {
+    msgList.scrollTop = msgList.scrollHeight;
+  }
+
+  setInterval(() => {
+    const chatsPane = document.getElementById("pane-chats");
+    const activeEl = document.activeElement;
+    const isTyping = activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA");
+    const isRecording = typeof mediaRecorder !== "undefined" && mediaRecorder && mediaRecorder.state === "recording";
+    if (chatsPane && !chatsPane.classList.contains("hidden-pane") && !isTyping && !isRecording) {
+      window.location.reload();
+    }
+  }, 5000);
+
+  let mediaRecorder = null;
+  let audioChunks = [];
+  const recordBtn = document.getElementById("record-btn");
+  const recStatus = document.getElementById("rec-status");
+  const voiceFileInput = document.getElementById("voice-file-input");
+
+  if (recordBtn && navigator.mediaDevices && window.MediaRecorder) {
+    recordBtn.addEventListener("click", async () => {
+      if (!mediaRecorder || mediaRecorder.state === "inactive") {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          audioChunks = [];
+          mediaRecorder = new MediaRecorder(stream);
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) audioChunks.push(e.data);
+          };
+          mediaRecorder.onstop = () => {
+            const blob = new Blob(audioChunks, { type: "audio/webm" });
+            const file = new File([blob], "voice_message.webm", { type: "audio/webm" });
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            voiceFileInput.files = dt.files;
+            recStatus.textContent = "Voice ready";
+            stream.getTracks().forEach((t) => t.stop());
+          };
+          mediaRecorder.start();
+          recordBtn.textContent = "⏹ Stop";
+          recStatus.textContent = "Recording...";
+        } catch (err) {
+          recStatus.textContent = "Mic denied";
+        }
+      } else {
+        mediaRecorder.stop();
+        recordBtn.textContent = "🎤 Voice";
+      }
+    });
+  }
+</script>
+{% endblock %}

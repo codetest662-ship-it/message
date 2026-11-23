@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>{% block title %}Message{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #0b0e14;
+      --phone-bg: #111622;
+      --panel: #182030;
+      --panel-2: #222c40;
+      --border: #2e3a52;
+      --text: #f5f7fb;
+      --muted: #98a4b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --danger: #ef4444;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+    }
+
+    .phone-shell {
+      width: 100%;
+      max-width: 430px;
+      min-height: 100vh;
+      background-color: var(--phone-bg);
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    @media (max-width: 430px) {
+      .phone-shell {
+        border-left: none;
+        border-right: none;
+        max-width: 100%;
+      }
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    input, textarea, select, button { font-family: inherit; }
+
+    .phone-topbar {
+      background-color: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+
+    .brand {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 7px 11px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background-color: var(--panel-2);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .btn:hover { background-color: #2b3852; text-decoration: none; }
+    .btn-primary { background-color: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn-primary:hover { background-color: var(--accent-hover); }
+    .btn-danger { background-color: rgba(239, 68, 68, 0.16); border-color: var(--danger); color: #fca5a5; }
+
+    .flash-wrap {
+      padding: 10px 12px 0;
+    }
+
+    .flash-msg {
+      background-color: var(--panel-2);
+      border: 1px solid var(--accent);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 10px;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    .phone-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding-bottom: 64px;
+    }
+
+    .bottom-nav {
+      position: fixed;
+      bottom: 0;
+      width: 100%;
+      max-width: 430px;
+      height: 58px;
+      background-color: var(--panel);
+      border-top: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      z-index: 30;
+    }
+
+    @media (max-width: 430px) {
+      .bottom-nav { max-width: 100%; }
+    }
+
+    .nav-tab {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      cursor: pointer;
+    }
+
+    .nav-tab.active, .nav-tab:hover {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .auth-card {
+      margin: 20px 14px;
+      background-color: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 20px;
+    }
+
+    .auth-card h1 { font-size: 21px; margin-bottom: 14px; }
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+    .field input, .field textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background-color: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+    }
+  </style>
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+  <div class="phone-shell">
+    <header class="phone-topbar">
+      <a href="/" class="brand">Message</a>
+      <div class="top-actions">
+        {% if session.get("user_id") %}
+          <a href="/profile" class="btn">Profile</a>
+          <a href="/logout" class="btn btn-danger">Log Out</a>
+        {% else %}
+          <a href="/login" class="btn">Log In</a>
+          <a href="/register" class="btn btn-primary">Sign Up</a>
+        {% endif %}
+      </div>
+    </header>
+
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="flash-wrap">
+          {% for m in messages %}
+            <div class="flash-msg">{{ m }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <main class="phone-content">
+      {% block content %}{% endblock %}
+    </main>
+
+    {% if session.get("user_id") %}
+      <nav class="bottom-nav" aria-label="Phone Navigation">
+        <button type="button" class="nav-tab active" id="tab-chats" onclick="switchPhoneTab('chats')">
+          <span>💬</span>
+          <span>Chats</span>
+        </button>
+        <button type="button" class="nav-tab" id="tab-friends" onclick="switchPhoneTab('friends')">
+          <span>👥</span>
+          <span>Friends</span>
+        </button>
+        <button type="button" class="nav-tab" id="tab-groups" onclick="switchPhoneTab('groups')">
+          <span>➕</span>
+          <span>Group</span>
+        </button>
+        <a href="/profile" class="nav-tab">
+          <span>👤</span>
+          <span>Profile</span>
+        </a>
+      </nav>
+    {% endif %}
+  </div>
+
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

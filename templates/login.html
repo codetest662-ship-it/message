@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Log In — Message{% endblock %}
+{% block content %}
+<div class="auth-card">
+  <h1>Log In</h1>
+  <form method="POST" action="/login">
+    <div class="field">
+      <label for="identifier">Username or Email</label>
+      <input id="identifier" type="text" name="identifier" required />
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" type="password" name="password" required />
+    </div>
+    <button type="submit" class="btn btn-primary" style="width: 100%;">Log In</button>
+  </form>
+  <p style="margin-top: 14px; font-size: 13px; color: var(--muted);">
+    <a href="/forgot-password">Forgot Password?</a>
+  </p>
+  <p style="margin-top: 8px; font-size: 13px; color: var(--muted);">
+    New here? <a href="/register">Create Account</a>
+  </p>
+</div>
+{% endblock %}
