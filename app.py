@@ -1,3 +1,4 @@
+import base64
 import os
 import random
 import secrets
@@ -14,6 +15,7 @@ from flask import (
     url_for,
 )
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import inspect, text
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -40,12 +42,21 @@ class User(db.Model):
     friend_number = db.Column(db.String(12), unique=True, nullable=False)
     bio = db.Column(db.String(300), default="Hey there! I'm using Message.", nullable=False)
     pfp_filename = db.Column(db.String(255), nullable=True)
+    pfp_data = db.Column(db.Text, nullable=True)
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+
+    @property
+    def avatar_src(self):
+        if self.pfp_data:
+            return self.pfp_data
+        if self.pfp_filename:
+            return url_for("uploaded_file", filename=self.pfp_filename)
+        return None
 
 
 class Friendship(db.Model):
@@ -82,6 +93,20 @@ class Message(db.Model):
     sender = db.relationship("User", foreign_keys=[sender_id])
 
 
+def ensure_schema_columns():
+    db.create_all()
+    inspector = inspect(db.engine)
+    if "user" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("user")}
+        if "pfp_data" not in cols:
+            with db.engine.begin() as conn:
+                conn.execute(text("ALTER TABLE user ADD COLUMN pfp_data TEXT"))
+
+
+with app.app_context():
+    ensure_schema_columns()
+
+
 # --- Helpers ---
 def generate_unique_friend_number():
     while True:
@@ -107,6 +132,17 @@ def login_required(fn):
 def current_user():
     uid = session.get("user_id")
     return db.session.get(User, uid) if uid else None
+
+
+def encode_pfp_data_url(file_storage):
+    if not file_storage or not file_storage.filename:
+        return None
+    raw = file_storage.read()
+    if not raw:
+        return None
+    mime = file_storage.mimetype or "image/png"
+    b64 = base64.b64encode(raw).decode("utf-8")
+    return f"data:{mime};base64,{b64}"
 
 
 def save_uploaded_stream(file_storage, prefix="file"):
@@ -140,10 +176,6 @@ def format_12h_hh_mm(dt):
     return dt.strftime("%I/%M %p")
 
 
-with app.app_context():
-    db.create_all()
-
-
 # --- Auth Routes ---
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -164,17 +196,14 @@ def register():
             flash("Username or email is already taken.")
             return render_template("register.html")
 
-        pfp_name = None
-        pfp_file = request.files.get("pfp")
-        if pfp_file and pfp_file.filename:
-            pfp_name, _ = save_uploaded_stream(pfp_file, prefix="pfp")
+        pfp_data = encode_pfp_data_url(request.files.get("pfp"))
 
         user = User(
             username=username,
             email=email,
             friend_number=generate_unique_friend_number(),
             bio=bio,
-            pfp_filename=pfp_name,
+            pfp_data=pfp_data,
         )
         user.set_password(password)
         db.session.add(user)
@@ -252,10 +281,9 @@ def profile():
         if bio is not None:
             user.bio = bio
 
-        pfp_file = request.files.get("pfp")
-        if pfp_file and pfp_file.filename:
-            pfp_name, _ = save_uploaded_stream(pfp_file, prefix="pfp")
-            user.pfp_filename = pfp_name
+        new_pfp = encode_pfp_data_url(request.files.get("pfp"))
+        if new_pfp:
+            user.pfp_data = new_pfp
 
         db.session.commit()
         flash("Profile updated.")
@@ -435,7 +463,7 @@ def index():
             rooms_sidebar.append({
                 "room": room,
                 "title": room.name or f"Group #{room.id}",
-                "pfp": None,
+                "avatar_src": None,
                 "is_group": True,
                 "other_user": None,
             })
@@ -447,7 +475,7 @@ def index():
             rooms_sidebar.append({
                 "room": room,
                 "title": other.username if other else "Direct Message",
-                "pfp": other.pfp_filename if other else None,
+                "avatar_src": other.avatar_src if other else None,
                 "is_group": False,
                 "other_user": other,
             })

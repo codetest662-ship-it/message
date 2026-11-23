@@ -117,7 +117,7 @@
       flex: 1;
       display: flex;
       flex-direction: column;
-      padding-bottom: 64px;
+      padding-bottom: 118px;
     }
 
     .bottom-nav {
@@ -130,7 +130,7 @@
       border-top: 1px solid var(--border);
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      z-index: 30;
+      z-index: 40;
     }
 
     @media (max-width: 430px) {
@@ -182,7 +182,7 @@
 <body>
   <div class="phone-shell">
     <header class="phone-topbar">
-      <a href="/" class="brand">Message</a>
+      <a href="/?tab=chats" class="brand">Message</a>
       <div class="top-actions">
         {% if session.get("user_id") %}
           <a href="/profile" class="btn">Profile</a>
@@ -210,15 +210,15 @@
 
     {% if session.get("user_id") %}
       <nav class="bottom-nav" aria-label="Phone Navigation">
-        <button type="button" class="nav-tab active" id="tab-chats" onclick="switchPhoneTab('chats')">
+        <button type="button" class="nav-tab {% if active_tab|default('chats') == 'chats' %}active{% endif %}" id="tab-chats" onclick="switchPhoneTab('chats')">
           <span>💬</span>
           <span>Chats</span>
         </button>
-        <button type="button" class="nav-tab" id="tab-friends" onclick="switchPhoneTab('friends')">
+        <button type="button" class="nav-tab {% if active_tab|default('chats') == 'friends' %}active{% endif %}" id="tab-friends" onclick="switchPhoneTab('friends')">
           <span>👥</span>
           <span>Friends</span>
         </button>
-        <button type="button" class="nav-tab" id="tab-groups" onclick="switchPhoneTab('groups')">
+        <button type="button" class="nav-tab {% if active_tab|default('chats') == 'groups' %}active{% endif %}" id="tab-groups" onclick="switchPhoneTab('groups')">
           <span>➕</span>
           <span>Group</span>
         </button>

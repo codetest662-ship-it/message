@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Profile — Message{% endblock %}
 {% block content %}
-<div class="auth-card" style="max-width: 520px;">
+<div class="auth-card">
   <h1>Profile</h1>
-  <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 18px;">
-    {% if user.pfp_filename %}
-      <img src="/uploads/{{ user.pfp_filename }}" alt="PFP" style="width: 72px; height: 72px; border-radius: 50%; object-fit: cover; border: 2px solid var(--accent);" />
+  <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 18px;">
+    {% if user.avatar_src %}
+      <img src="{{ user.avatar_src }}" alt="PFP" style="width: 72px; height: 72px; border-radius: 50%; object-fit: cover; border: 2px solid var(--accent);" />
     {% else %}
       <div style="width: 72px; height: 72px; border-radius: 50%; background: var(--panel-2); display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700;">
         {{ user.username[0]|upper }}

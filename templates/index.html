@@ -257,8 +257,8 @@
   <!-- PANE 1: CHATS & ACTIVE CONVERSATION -->
   <div id="pane-chats" class="phone-pane {% if active_tab != 'chats' %}hidden-pane{% endif %}">
     <div class="card me-row">
-      {% if user.pfp_filename %}
-        <img src="/uploads/{{ user.pfp_filename }}" class="avatar" alt="PFP" />
+      {% if user.avatar_src %}
+        <img src="{{ user.avatar_src }}" class="avatar" alt="PFP" />
       {% else %}
         <div class="avatar">{{ user.username[0]|upper }}</div>
       {% endif %}
@@ -290,8 +290,8 @@
         <div class="messages-list" id="messages-list">
           {% for m in messages %}
             <div class="msg-line">
-              {% if m.sender.pfp_filename %}
-                <img src="/uploads/{{ m.sender.pfp_filename }}" class="avatar" style="width: 32px; height: 32px;" alt="{{ m.sender.username }}" />
+              {% if m.sender.avatar_src %}
+                <img src="{{ m.sender.avatar_src }}" class="avatar" style="width: 32px; height: 32px;" alt="{{ m.sender.username }}" />
               {% else %}
                 <div class="avatar" style="width: 32px; height: 32px; font-size: 12px;">{{ m.sender.username[0]|upper }}</div>
               {% endif %}
@@ -350,8 +350,8 @@
       <div class="section-title">DMs &amp; Group Chats</div>
       {% for item in rooms_sidebar %}
         <a href="/?room_id={{ item.room.id }}&tab=chats" class="chat-row {% if active_room and active_room.id == item.room.id %}active{% endif %}">
-          {% if item.pfp %}
-            <img src="/uploads/{{ item.pfp }}" class="avatar" alt="{{ item.title }}" />
+          {% if item.avatar_src %}
+            <img src="{{ item.avatar_src }}" class="avatar" alt="{{ item.title }}" />
           {% else %}
             <div class="avatar">{{ item.title[0]|upper }}</div>
           {% endif %}
@@ -382,8 +382,8 @@
         {% set rel = rel_map.get(f.id) %}
         <div class="friend-card">
           <div style="display: flex; align-items: center; gap: 10px;">
-            {% if f.pfp_filename %}
-              <img src="/uploads/{{ f.pfp_filename }}" class="avatar" alt="{{ f.username }}" />
+            {% if f.avatar_src %}
+              <img src="{{ f.avatar_src }}" class="avatar" alt="{{ f.username }}" />
             {% else %}
               <div class="avatar">{{ f.username[0]|upper }}</div>
             {% endif %}
