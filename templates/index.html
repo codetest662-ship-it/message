@@ -292,7 +292,7 @@
 
         <div class="messages-list" id="messages-list">
           {% for m in messages %}
-            <div class="msg-line">
+            <div class="msg-line" data-msg-id="{{ m.id }}">
               <div class="avatar" style="width: 32px; height: 32px; font-size: 12px;">{{ m.sender.username[0]|upper }}</div>
 
               <div class="msg-card">
@@ -329,6 +329,7 @@
         method="POST"
         action="/messages/send/{{ active_room.id }}"
         enctype="multipart/form-data"
+        data-room-id="{{ active_room.id }}"
         data-active-tab="{{ active_tab|default('chats') }}"
         data-username="{{ user.username }}"
         data-initial="{{ user.username[0]|upper }}"
@@ -480,6 +481,7 @@
   }
 
   const messageForm = document.getElementById("message-form");
+  const activeRoomId = (messageForm && messageForm.dataset.roomId) || "";
   const initialTab = (messageForm && messageForm.dataset.activeTab) || "chats";
   switchPhoneTab(initialTab);
 
@@ -488,19 +490,29 @@
     initial: (messageForm && messageForm.dataset.initial) || "U"
   };
 
-  function appendSentMessagePreview(textBody, attachmentFile, voiceFile) {
-    if (!msgList) return;
-    if (!textBody && !attachmentFile && !voiceFile) return;
+  let lastMessageId = 0;
+  if (msgList) {
+    msgList.querySelectorAll(".msg-line[data-msg-id]").forEach((el) => {
+      const idNum = Number(el.dataset.msgId);
+      if (Number.isFinite(idNum) && idNum > lastMessageId) {
+        lastMessageId = idNum;
+      }
+    });
+  }
 
+  function buildMessageElement(msgId, senderInitial, senderName, timeStr, textBody, attachmentLabel, voiceLabel, fileUrl, originalFilename) {
     const line = document.createElement("div");
     line.className = "msg-line";
+    if (msgId) {
+      line.dataset.msgId = String(msgId);
+    }
 
     const badge = document.createElement("div");
     badge.className = "avatar";
     badge.style.width = "32px";
     badge.style.height = "32px";
     badge.style.fontSize = "12px";
-    badge.textContent = CURRENT_USER.initial;
+    badge.textContent = (senderInitial || "?").toUpperCase();
     line.appendChild(badge);
 
     const card = document.createElement("div");
@@ -510,11 +522,11 @@
     head.className = "msg-head";
 
     const author = document.createElement("strong");
-    author.textContent = CURRENT_USER.username;
+    author.textContent = senderName || "User";
 
     const ts = document.createElement("span");
     ts.className = "msg-ts";
-    ts.textContent = "Just now";
+    ts.textContent = timeStr || "";
 
     head.appendChild(author);
     head.appendChild(ts);
@@ -528,21 +540,111 @@
       card.appendChild(bodyDiv);
     }
 
-    if (voiceFile) {
+    if (voiceLabel) {
       const voiceNote = document.createElement("div");
       voiceNote.className = "file-privacy-box";
-      voiceNote.textContent = "🎤 Voice note sent (" + voiceFile.name + ")";
+      voiceNote.textContent = voiceLabel;
       card.appendChild(voiceNote);
-    } else if (attachmentFile) {
+    } else if (attachmentLabel) {
       const fileBox = document.createElement("div");
       fileBox.className = "file-privacy-box";
-      fileBox.textContent = "🔒 " + attachmentFile.name + " (sent)";
+      fileBox.textContent = attachmentLabel;
+      card.appendChild(fileBox);
+    } else if (fileUrl && originalFilename) {
+      const fileBox = document.createElement("div");
+      fileBox.className = "file-privacy-box";
+      const labelSpan = document.createElement("span");
+      labelSpan.style.overflow = "hidden";
+      labelSpan.style.textOverflow = "ellipsis";
+      labelSpan.style.whiteSpace = "nowrap";
+      labelSpan.textContent = "🔒 " + originalFilename;
+
+      const saveLink = document.createElement("a");
+      saveLink.href = fileUrl;
+      saveLink.className = "btn btn-xs btn-primary";
+      saveLink.textContent = "Save";
+
+      fileBox.appendChild(labelSpan);
+      fileBox.appendChild(saveLink);
       card.appendChild(fileBox);
     }
 
     line.appendChild(card);
+    return line;
+  }
+
+  function appendSentMessagePreview(textBody, attachmentFile, voiceFile) {
+    if (!msgList) return;
+    if (!textBody && !attachmentFile && !voiceFile) return;
+
+    const line = buildMessageElement(
+      0,
+      CURRENT_USER.initial,
+      CURRENT_USER.username,
+      "Just now",
+      textBody,
+      attachmentFile ? ("🔒 " + attachmentFile.name + " (sent)") : "",
+      voiceFile ? ("🎤 Voice note sent (" + voiceFile.name + ")") : "",
+      "",
+      ""
+    );
+    line.dataset.optimistic = "1";
     msgList.appendChild(line);
     msgList.scrollTop = msgList.scrollHeight;
+  }
+
+  function appendIncomingMessage(msg) {
+    if (!msgList || !msg) return;
+    if (msg.id && msgList.querySelector('.msg-line[data-msg-id="' + msg.id + '"]')) {
+      return;
+    }
+    const line = buildMessageElement(
+      msg.id,
+      msg.sender_initial || (msg.sender_name ? msg.sender_name[0] : "?"),
+      msg.sender_name || "User",
+      msg.time_str || "",
+      msg.body || "",
+      "",
+      msg.msg_type === "voice" ? "🎤 Voice note" : "",
+      msg.msg_type === "file" && msg.file_url ? msg.file_url : "",
+      msg.msg_type === "file" ? (msg.original_filename || "File") : ""
+    );
+    msgList.appendChild(line);
+    msgList.scrollTop = msgList.scrollHeight;
+  }
+
+  async function pollNewMessages() {
+    const chatsPane = document.getElementById("pane-chats");
+    const activeEl = document.activeElement;
+    const isTyping = activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA");
+    const isRecording = typeof mediaRecorder !== "undefined" && mediaRecorder && mediaRecorder.state === "recording";
+
+    if (!activeRoomId || !chatsPane || chatsPane.classList.contains("hidden-pane") || isTyping || isRecording) {
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/messages/" + activeRoomId + "?after_id=" + lastMessageId, {
+        headers: { "X-Requested-With": "XMLHttpRequest" }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && Array.isArray(data.messages)) {
+        for (const m of data.messages) {
+          const idNum = Number(m.id);
+          if (Number.isFinite(idNum) && idNum > lastMessageId) {
+            lastMessageId = idNum;
+            const optimistic = msgList && msgList.querySelector('.msg-line[data-optimistic="1"]');
+            if (optimistic && m.sender_name === CURRENT_USER.username && (m.body || "") === (optimistic.querySelector(".msg-card > div:nth-child(2)")?.textContent || "")) {
+              optimistic.remove();
+            }
+            appendIncomingMessage(m);
+          }
+        }
+      }
+    } catch (err) {
+      // Ignore transient network errors during background polling
+    }
   }
 
   let mediaRecorder = null;
@@ -581,6 +683,7 @@
           if (attachmentInput) attachmentInput.value = "";
           if (voiceFileInput) voiceFileInput.value = "";
           if (recStatus) recStatus.textContent = "";
+          pollNewMessages();
         } else {
           messageForm.submit();
         }
@@ -622,6 +725,10 @@
         recordBtn.textContent = "🎤 Voice";
       }
     });
+  }
+
+  if (activeRoomId) {
+    setInterval(pollNewMessages, 4000);
   }
 </script>
 {% endblock %}
