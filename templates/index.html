@@ -324,7 +324,17 @@
         </div>
       </div>
 
-      <form class="bottom-composer-dock" method="POST" action="/messages/send/{{ active_room.id }}" enctype="multipart/form-data">
+      <form
+        id="message-form"
+        class="bottom-composer-dock"
+        method="POST"
+        action="/messages/send/{{ active_room.id }}"
+        enctype="multipart/form-data"
+        data-active-tab="{{ active_tab|default('chats') }}"
+        data-username="{{ user.username }}"
+        data-initial="{{ user.username[0]|upper }}"
+        data-avatar="{{ user.avatar_src or '' }}"
+      >
         <div class="emoji-strip">
           {% for emo in ["😀", "😂", "❤️", "🔥", "👍", "🙏", "🎉", "😢", "😮", "💯"] %}
             <button type="button" class="emoji-btn" onclick="insertEmoji('{{ emo }}')">{{ emo }}</button>
@@ -334,7 +344,7 @@
         <div class="composer-controls">
           <div class="composer-send-row">
             <input type="text" name="body" id="msg-body" class="mobile-input" placeholder="Message..." />
-            <button type="submit" class="btn btn-primary btn-xs">Send</button>
+            <button type="submit" id="send-msg-btn" class="btn btn-primary btn-xs">Send</button>
           </div>
           <div class="composer-send-row">
             <input type="file" name="attachment" id="attachment-input" style="font-size: 11px; color: var(--muted); max-width: 155px;" title="Photo, video, or file up to 20GB" />
@@ -453,8 +463,6 @@
     }
   }
 
-  switchPhoneTab("{{ active_tab|default('chats') }}");
-
   const searchToggleBtn = document.getElementById("search-toggle-btn");
   const searchDrawer = document.getElementById("search-drawer");
   const searchInputBox = document.getElementById("search-input-box");
@@ -479,11 +487,130 @@
     msgList.scrollTop = msgList.scrollHeight;
   }
 
+  const messageForm = document.getElementById("message-form");
+  const initialTab = (messageForm && messageForm.dataset.activeTab) || "chats";
+  switchPhoneTab(initialTab);
+
+  const CURRENT_USER = {
+    username: (messageForm && messageForm.dataset.username) || "You",
+    initial: (messageForm && messageForm.dataset.initial) || "U",
+    avatarSrc: (messageForm && messageForm.dataset.avatar) || ""
+  };
+
+  function appendSentMessagePreview(textBody, attachmentFile, voiceFile) {
+    if (!msgList) return;
+    if (!textBody && !attachmentFile && !voiceFile) return;
+
+    const line = document.createElement("div");
+    line.className = "msg-line";
+
+    if (CURRENT_USER.avatarSrc) {
+      const img = document.createElement("img");
+      img.src = CURRENT_USER.avatarSrc;
+      img.className = "avatar";
+      img.style.width = "32px";
+      img.style.height = "32px";
+      img.alt = CURRENT_USER.username;
+      line.appendChild(img);
+    } else {
+      const badge = document.createElement("div");
+      badge.className = "avatar";
+      badge.style.width = "32px";
+      badge.style.height = "32px";
+      badge.style.fontSize = "12px";
+      badge.textContent = CURRENT_USER.initial;
+      line.appendChild(badge);
+    }
+
+    const card = document.createElement("div");
+    card.className = "msg-card";
+
+    const head = document.createElement("div");
+    head.className = "msg-head";
+
+    const author = document.createElement("strong");
+    author.textContent = CURRENT_USER.username;
+
+    const ts = document.createElement("span");
+    ts.className = "msg-ts";
+    ts.textContent = "Just now";
+
+    head.appendChild(author);
+    head.appendChild(ts);
+    card.appendChild(head);
+
+    if (textBody) {
+      const bodyDiv = document.createElement("div");
+      bodyDiv.style.fontSize = "13px";
+      bodyDiv.style.wordBreak = "break-word";
+      bodyDiv.textContent = textBody;
+      card.appendChild(bodyDiv);
+    }
+
+    if (voiceFile) {
+      const voiceNote = document.createElement("div");
+      voiceNote.className = "file-privacy-box";
+      voiceNote.textContent = "🎤 Voice note sent (" + voiceFile.name + ")";
+      card.appendChild(voiceNote);
+    } else if (attachmentFile) {
+      const fileBox = document.createElement("div");
+      fileBox.className = "file-privacy-box";
+      fileBox.textContent = "🔒 " + attachmentFile.name + " (sent)";
+      card.appendChild(fileBox);
+    }
+
+    line.appendChild(card);
+    msgList.appendChild(line);
+    msgList.scrollTop = msgList.scrollHeight;
+  }
+
   let mediaRecorder = null;
   let audioChunks = [];
   const recordBtn = document.getElementById("record-btn");
   const recStatus = document.getElementById("rec-status");
   const voiceFileInput = document.getElementById("voice-file-input");
+  const attachmentInput = document.getElementById("attachment-input");
+  const msgBodyInput = document.getElementById("msg-body");
+  const sendMsgBtn = document.getElementById("send-msg-btn");
+
+  if (messageForm) {
+    messageForm.addEventListener("submit", async (e) => {
+      const textVal = msgBodyInput ? msgBodyInput.value.trim() : "";
+      const attFile = attachmentInput && attachmentInput.files.length ? attachmentInput.files[0] : null;
+      const vFile = voiceFileInput && voiceFileInput.files.length ? voiceFileInput.files[0] : null;
+
+      if (!textVal && !attFile && !vFile) {
+        e.preventDefault();
+        return;
+      }
+
+      e.preventDefault();
+      if (sendMsgBtn) sendMsgBtn.disabled = true;
+
+      try {
+        const formData = new FormData(messageForm);
+        const res = await fetch(messageForm.action, {
+          method: "POST",
+          body: formData,
+          headers: { "X-Requested-With": "XMLHttpRequest" }
+        });
+
+        if (res.ok) {
+          appendSentMessagePreview(textVal, attFile, vFile);
+          if (msgBodyInput) msgBodyInput.value = "";
+          if (attachmentInput) attachmentInput.value = "";
+          if (voiceFileInput) voiceFileInput.value = "";
+          if (recStatus) recStatus.textContent = "";
+        } else {
+          messageForm.submit();
+        }
+      } catch (err) {
+        messageForm.submit();
+      } finally {
+        if (sendMsgBtn) sendMsgBtn.disabled = false;
+      }
+    });
+  }
 
   if (recordBtn && navigator.mediaDevices && window.MediaRecorder) {
     recordBtn.addEventListener("click", async () => {
