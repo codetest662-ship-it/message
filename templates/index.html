@@ -158,12 +158,15 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+    contain: layout style;
   }
 
   .msg-line {
     display: flex;
     gap: 8px;
     align-items: flex-start;
+    content-visibility: auto;
+    contain-intrinsic-size: 0 56px;
   }
 
   .msg-card {
@@ -258,7 +261,7 @@
   <div id="pane-chats" class="phone-pane {% if active_tab != 'chats' %}hidden-pane{% endif %}">
     <div class="card me-row">
       {% if user.avatar_src %}
-        <img src="{{ user.avatar_src }}" class="avatar" alt="PFP" />
+        <img src="{{ user.avatar_src }}" class="avatar" alt="PFP" decoding="async" />
       {% else %}
         <div class="avatar">{{ user.username[0]|upper }}</div>
       {% endif %}
@@ -290,11 +293,7 @@
         <div class="messages-list" id="messages-list">
           {% for m in messages %}
             <div class="msg-line">
-              {% if m.sender.avatar_src %}
-                <img src="{{ m.sender.avatar_src }}" class="avatar" style="width: 32px; height: 32px;" alt="{{ m.sender.username }}" />
-              {% else %}
-                <div class="avatar" style="width: 32px; height: 32px; font-size: 12px;">{{ m.sender.username[0]|upper }}</div>
-              {% endif %}
+              <div class="avatar" style="width: 32px; height: 32px; font-size: 12px;">{{ m.sender.username[0]|upper }}</div>
 
               <div class="msg-card">
                 <div class="msg-head">
@@ -308,7 +307,7 @@
 
                 {% if m.msg_type == "voice" and m.file_filename %}
                   <div style="margin-top: 6px;">
-                    <audio controls src="/uploads/{{ m.file_filename }}" style="max-width: 100%; height: 32px;"></audio>
+                    <audio controls preload="none" src="/uploads/{{ m.file_filename }}" style="max-width: 100%; height: 32px;"></audio>
                   </div>
                 {% elif m.msg_type == "file" and m.file_filename %}
                   <div class="file-privacy-box">
@@ -333,11 +332,10 @@
         data-active-tab="{{ active_tab|default('chats') }}"
         data-username="{{ user.username }}"
         data-initial="{{ user.username[0]|upper }}"
-        data-avatar="{{ user.avatar_src or '' }}"
       >
         <div class="emoji-strip">
           {% for emo in ["😀", "😂", "❤️", "🔥", "👍", "🙏", "🎉", "😢", "😮", "💯"] %}
-            <button type="button" class="emoji-btn" onclick="insertEmoji('{{ emo }}')">{{ emo }}</button>
+            <button type="button" class="emoji-btn" data-emoji="{{ emo }}">{{ emo }}</button>
           {% endfor %}
         </div>
 
@@ -360,11 +358,7 @@
       <div class="section-title">DMs &amp; Group Chats</div>
       {% for item in rooms_sidebar %}
         <a href="/?room_id={{ item.room.id }}&tab=chats" class="chat-row {% if active_room and active_room.id == item.room.id %}active{% endif %}">
-          {% if item.avatar_src %}
-            <img src="{{ item.avatar_src }}" class="avatar" alt="{{ item.title }}" />
-          {% else %}
-            <div class="avatar">{{ item.title[0]|upper }}</div>
-          {% endif %}
+          <div class="avatar">{{ item.title[0]|upper }}</div>
           <div>
             <div style="font-size: 14px; font-weight: 700;">{{ item.title }}</div>
             <div style="font-size: 11px; color: var(--muted);">{{ "Group Chat" if item.is_group else "Direct Message" }}</div>
@@ -392,11 +386,7 @@
         {% set rel = rel_map.get(f.id) %}
         <div class="friend-card">
           <div style="display: flex; align-items: center; gap: 10px;">
-            {% if f.avatar_src %}
-              <img src="{{ f.avatar_src }}" class="avatar" alt="{{ f.username }}" />
-            {% else %}
-              <div class="avatar">{{ f.username[0]|upper }}</div>
-            {% endif %}
+            <div class="avatar">{{ f.username[0]|upper }}</div>
             <div style="min-width: 0;">
               <div style="font-weight: 700; font-size: 14px;">{{ f.username }} <span style="color: var(--muted); font-size: 11px;">#{{ f.friend_number }}</span></div>
               <div style="font-size: 12px; color: var(--muted);">{{ f.bio }}</div>
@@ -475,12 +465,14 @@
     });
   }
 
-  function insertEmoji(emoji) {
-    const input = document.getElementById("msg-body");
-    if (!input) return;
-    input.value += emoji;
-    input.focus();
-  }
+  const msgBodyInput = document.getElementById("msg-body");
+  document.querySelectorAll(".emoji-btn[data-emoji]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (!msgBodyInput) return;
+      msgBodyInput.value += btn.dataset.emoji || "";
+      msgBodyInput.focus();
+    });
+  });
 
   const msgList = document.getElementById("messages-list");
   if (msgList) {
@@ -493,8 +485,7 @@
 
   const CURRENT_USER = {
     username: (messageForm && messageForm.dataset.username) || "You",
-    initial: (messageForm && messageForm.dataset.initial) || "U",
-    avatarSrc: (messageForm && messageForm.dataset.avatar) || ""
+    initial: (messageForm && messageForm.dataset.initial) || "U"
   };
 
   function appendSentMessagePreview(textBody, attachmentFile, voiceFile) {
@@ -504,23 +495,13 @@
     const line = document.createElement("div");
     line.className = "msg-line";
 
-    if (CURRENT_USER.avatarSrc) {
-      const img = document.createElement("img");
-      img.src = CURRENT_USER.avatarSrc;
-      img.className = "avatar";
-      img.style.width = "32px";
-      img.style.height = "32px";
-      img.alt = CURRENT_USER.username;
-      line.appendChild(img);
-    } else {
-      const badge = document.createElement("div");
-      badge.className = "avatar";
-      badge.style.width = "32px";
-      badge.style.height = "32px";
-      badge.style.fontSize = "12px";
-      badge.textContent = CURRENT_USER.initial;
-      line.appendChild(badge);
-    }
+    const badge = document.createElement("div");
+    badge.className = "avatar";
+    badge.style.width = "32px";
+    badge.style.height = "32px";
+    badge.style.fontSize = "12px";
+    badge.textContent = CURRENT_USER.initial;
+    line.appendChild(badge);
 
     const card = document.createElement("div");
     card.className = "msg-card";
@@ -570,7 +551,6 @@
   const recStatus = document.getElementById("rec-status");
   const voiceFileInput = document.getElementById("voice-file-input");
   const attachmentInput = document.getElementById("attachment-input");
-  const msgBodyInput = document.getElementById("msg-body");
   const sendMsgBtn = document.getElementById("send-msg-btn");
 
   if (messageForm) {
