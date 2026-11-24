@@ -4,10 +4,12 @@ import random
 import secrets
 from datetime import datetime
 from functools import wraps
+
 from flask import (
     Flask,
     flash,
     g,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -140,6 +142,8 @@ def login_required(fn):
         user = current_user()
         if not user:
             session.pop("user_id", None)
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return jsonify({"error": "Unauthorized"}), 401
             return redirect(url_for("login"))
         return fn(*args, **kwargs)
 
@@ -573,11 +577,59 @@ def index():
     )
 
 
+@app.route("/api/messages/<int:room_id>")
+@login_required
+def api_messages(room_id):
+    user = current_user()
+    if not ChatMember.query.filter_by(room_id=room_id, user_id=user.id).first():
+        return jsonify({"error": "Forbidden"}), 403
+
+    after_id = request.args.get("after_id", 0, type=int)
+    new_msgs = (
+        Message.query.filter(Message.room_id == room_id, Message.id > after_id)
+        .order_by(Message.id.asc())
+        .all()
+    )
+
+    muted_user_ids = {
+        r.friend_id
+        for r in Friendship.query.filter_by(user_id=user.id, muted=True).all()
+    }
+
+    sender_ids = {m.sender_id for m in new_msgs}
+    senders = {u.id: u for u in User.query.filter(User.id.in_(sender_ids)).all()} if sender_ids else {}
+
+    payload = []
+    for m in new_msgs:
+        muted_sender = m.sender_id in muted_user_ids
+        sender = senders.get(m.sender_id)
+        sender_name = sender.username if sender else "User"
+        file_fn = None if muted_sender else (m.file_filename or "")
+        orig_fn = None if muted_sender else (m.original_filename or "")
+
+        payload.append({
+            "id": m.id,
+            "sender_name": sender_name,
+            "sender_initial": sender_name[0].upper() if sender_name else "?",
+            "time_str": format_12h_hh_mm(m.created_at),
+            "body": "[Muted user message]" if muted_sender else (m.body or ""),
+            "msg_type": m.msg_type or "text",
+            "file_filename": file_fn,
+            "original_filename": orig_fn,
+            "file_url": f"/uploads/{file_fn}?download=1" if file_fn else "",
+        })
+
+    return jsonify({"messages": payload})
+
+
 @app.route("/messages/send/<int:room_id>", methods=["POST"])
 @login_required
 def send_message(room_id):
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     user = current_user()
     if not ChatMember.query.filter_by(room_id=room_id, user_id=user.id).first():
+        if is_ajax:
+            return jsonify({"error": "Forbidden"}), 403
         return redirect(url_for("index"))
 
     room = db.session.get(ChatRoom, room_id)
@@ -586,6 +638,8 @@ def send_message(room_id):
             ChatMember.room_id == room.id, ChatMember.user_id != user.id
         ).first()
         if other_m and is_blocked_between(user.id, other_m.user_id):
+            if is_ajax:
+                return jsonify({"error": "Messaging is blocked between you and this user."}), 403
             flash("Messaging is blocked between you and this user.")
             return redirect(url_for("index", room_id=room_id))
 
@@ -605,6 +659,8 @@ def send_message(room_id):
         msg_type = "file"
 
     if not body and not stored_file:
+        if is_ajax:
+            return jsonify({"error": "Empty message"}), 400
         return redirect(url_for("index", room_id=room_id))
 
     msg = Message(
@@ -617,6 +673,22 @@ def send_message(room_id):
     )
     db.session.add(msg)
     db.session.commit()
+
+    if is_ajax:
+        return jsonify({
+            "ok": True,
+            "message": {
+                "id": msg.id,
+                "sender_name": user.username,
+                "sender_initial": user.username[0].upper() if user.username else "?",
+                "time_str": format_12h_hh_mm(msg.created_at),
+                "body": msg.body or "",
+                "msg_type": msg.msg_type,
+                "file_filename": msg.file_filename or "",
+                "original_filename": msg.original_filename or "",
+                "file_url": f"/uploads/{msg.file_filename}?download=1" if msg.file_filename else "",
+            },
+        })
 
     return redirect(url_for("index", room_id=room_id, tab="chats"))
 
