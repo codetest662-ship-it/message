@@ -479,16 +479,6 @@
     msgList.scrollTop = msgList.scrollHeight;
   }
 
-  setInterval(() => {
-    const chatsPane = document.getElementById("pane-chats");
-    const activeEl = document.activeElement;
-    const isTyping = activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA");
-    const isRecording = typeof mediaRecorder !== "undefined" && mediaRecorder && mediaRecorder.state === "recording";
-    if (chatsPane && !chatsPane.classList.contains("hidden-pane") && !isTyping && !isRecording) {
-      window.location.reload();
-    }
-  }, 5000);
-
   let mediaRecorder = null;
   let audioChunks = [];
   const recordBtn = document.getElementById("record-btn");
