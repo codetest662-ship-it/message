@@ -7,6 +7,7 @@ from functools import wraps
 from flask import (
     Flask,
     flash,
+    g,
     redirect,
     render_template,
     request,
@@ -25,15 +26,17 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change-this-secret-key")
-# In app.py
 
 db_url = os.environ.get("DATABASE_URL")
-if db_url and db_url.startswith("postgres://"):
-    # SQLAlchemy requires 'postgresql://' instead of 'postgres://'
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
+if db_url:
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    if db_url.startswith("postgresql://"):
+        db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url or f"sqlite:///{os.path.join(BASE_DIR, 'messenger.db')}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
 # 20 GB maximum upload size
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024 * 1024
 
@@ -122,23 +125,25 @@ def generate_unique_friend_number():
             return num
 
 
+def current_user():
+    if hasattr(g, "_cached_user"):
+        return g._cached_user
+    uid = session.get("user_id")
+    user = db.session.get(User, uid) if uid else None
+    g._cached_user = user
+    return user
+
+
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if "user_id" not in session:
-            return redirect(url_for("login"))
-        user = db.session.get(User, session["user_id"])
+        user = current_user()
         if not user:
             session.pop("user_id", None)
             return redirect(url_for("login"))
         return fn(*args, **kwargs)
 
     return wrapper
-
-
-def current_user():
-    uid = session.get("user_id")
-    return db.session.get(User, uid) if uid else None
 
 
 def encode_pfp_data_url(file_storage):
@@ -217,6 +222,7 @@ def register():
         db.session.commit()
 
         session["user_id"] = user.id
+        g._cached_user = user
         return redirect(url_for("index"))
 
     return render_template("register.html")
@@ -237,6 +243,7 @@ def login():
 
         if user and user.check_password(password):
             session["user_id"] = user.id
+            g._cached_user = user
             return redirect(url_for("index"))
 
         flash("Invalid credentials.")
@@ -267,6 +274,7 @@ def forgot_password():
 @login_required
 def logout():
     session.pop("user_id", None)
+    g._cached_user = None
     return redirect(url_for("login"))
 
 
@@ -440,30 +448,55 @@ def index():
 
     rel_map = {}
     friend_ids_ordered = []
+    muted_user_ids = set()
 
     for r in outgoing:
         rel_map[r.friend_id] = r
-        if r.friend_id not in friend_ids_ordered:
+        if r.muted:
+            muted_user_ids.add(r.friend_id)
+        if r.friend_id not in friend_ids_ordered and r.friend_id != user.id:
             friend_ids_ordered.append(r.friend_id)
 
     for r in incoming:
         if r.user_id not in rel_map:
             rel_map[r.user_id] = r
-        if r.user_id not in friend_ids_ordered:
+        if r.user_id not in friend_ids_ordered and r.user_id != user.id:
             friend_ids_ordered.append(r.user_id)
 
-    friends = []
-    for fid in friend_ids_ordered:
-        if fid == user.id:
-            continue
-        f_user = db.session.get(User, fid)
-        if f_user:
-            friends.append(f_user)
+    friend_users_by_id = {}
+    if friend_ids_ordered:
+        for f_user in User.query.filter(User.id.in_(friend_ids_ordered)).all():
+            friend_users_by_id[f_user.id] = f_user
+    friends = [friend_users_by_id[fid] for fid in friend_ids_ordered if fid in friend_users_by_id]
 
     my_memberships = ChatMember.query.filter_by(user_id=user.id).all()
+    my_room_ids = [m.room_id for m in my_memberships]
+
+    rooms_by_id = {}
+    if my_room_ids:
+        for r in ChatRoom.query.filter(ChatRoom.id.in_(my_room_ids)).all():
+            rooms_by_id[r.id] = r
+
+    all_room_members = []
+    if my_room_ids:
+        all_room_members = ChatMember.query.filter(ChatMember.room_id.in_(my_room_ids)).all()
+
+    other_user_id_by_room = {}
+    needed_user_ids = set()
+    for mem in all_room_members:
+        if mem.user_id != user.id and mem.room_id not in other_user_id_by_room:
+            other_user_id_by_room[mem.room_id] = mem.user_id
+            needed_user_ids.add(mem.user_id)
+
+    extra_users_by_id = dict(friend_users_by_id)
+    missing_uids = [uid for uid in needed_user_ids if uid not in extra_users_by_id]
+    if missing_uids:
+        for u in User.query.filter(User.id.in_(missing_uids)).all():
+            extra_users_by_id[u.id] = u
+
     rooms_sidebar = []
-    for m in my_memberships:
-        room = db.session.get(ChatRoom, m.room_id)
+    for rid in my_room_ids:
+        room = rooms_by_id.get(rid)
         if not room:
             continue
         if room.is_group:
@@ -475,10 +508,8 @@ def index():
                 "other_user": None,
             })
         else:
-            other_m = ChatMember.query.filter(
-                ChatMember.room_id == room.id, ChatMember.user_id != user.id
-            ).first()
-            other = db.session.get(User, other_m.user_id) if other_m else None
+            other_id = other_user_id_by_room.get(room.id)
+            other = extra_users_by_id.get(other_id) if other_id else None
             rooms_sidebar.append({
                 "room": room,
                 "title": other.username if other else "Direct Message",
@@ -488,8 +519,8 @@ def index():
             })
 
     active_room = None
-    if active_room_id and ChatMember.query.filter_by(room_id=active_room_id, user_id=user.id).first():
-        active_room = db.session.get(ChatRoom, active_room_id)
+    if active_room_id and active_room_id in rooms_by_id:
+        active_room = rooms_by_id[active_room_id]
     elif rooms_sidebar:
         active_room = rooms_sidebar[0]["room"]
 
@@ -498,10 +529,8 @@ def index():
         if active_room.is_group:
             active_room_title = active_room.name or f"Group #{active_room.id}"
         else:
-            other_m = ChatMember.query.filter(
-                ChatMember.room_id == active_room.id, ChatMember.user_id != user.id
-            ).first()
-            other = db.session.get(User, other_m.user_id) if other_m else None
+            other_id = other_user_id_by_room.get(active_room.id)
+            other = extra_users_by_id.get(other_id) if other_id else None
             active_room_title = other.username if other else "Direct Message"
 
     messages_view = []
@@ -510,11 +539,18 @@ def index():
         if search_q:
             q = q.filter(Message.body.ilike(f"%{search_q}%"))
         raw_msgs = q.order_by(Message.id.asc()).all()
+
+        sender_ids = {m.sender_id for m in raw_msgs if m.sender_id not in extra_users_by_id}
+        if sender_ids:
+            for s in User.query.filter(User.id.in_(sender_ids)).all():
+                extra_users_by_id[s.id] = s
+
         for msg in raw_msgs:
-            muted_sender = is_muted(user.id, msg.sender_id)
+            muted_sender = msg.sender_id in muted_user_ids
+            sender_obj = extra_users_by_id.get(msg.sender_id) or msg.sender
             messages_view.append({
                 "id": msg.id,
-                "sender": msg.sender,
+                "sender": sender_obj,
                 "body": "[Muted user message]" if muted_sender else (msg.body or ""),
                 "msg_type": msg.msg_type,
                 "file_filename": None if muted_sender else msg.file_filename,
