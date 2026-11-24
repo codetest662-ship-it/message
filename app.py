@@ -33,7 +33,6 @@ if db_url and db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url or f"sqlite:///{os.path.join(BASE_DIR, 'messenger.db')}"
-app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{os.path.join(BASE_DIR, 'messenger.db')}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 # 20 GB maximum upload size
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024 * 1024
