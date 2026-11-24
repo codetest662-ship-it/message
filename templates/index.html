@@ -165,8 +165,6 @@
     display: flex;
     gap: 8px;
     align-items: flex-start;
-    content-visibility: auto;
-    contain-intrinsic-size: 0 56px;
   }
 
   .msg-card {
@@ -476,9 +474,19 @@
   });
 
   const msgList = document.getElementById("messages-list");
-  if (msgList) {
+
+  function scrollMessagesToBottom() {
+    if (!msgList) return;
+    const lastMsg = msgList.lastElementChild;
+    if (lastMsg) {
+      lastMsg.scrollIntoView({ block: "end" });
+    }
     msgList.scrollTop = msgList.scrollHeight;
   }
+
+  window.addEventListener("load", () => {
+    requestAnimationFrame(scrollMessagesToBottom);
+  });
 
   const messageForm = document.getElementById("message-form");
   const activeRoomId = (messageForm && messageForm.dataset.roomId) || "";
@@ -590,7 +598,7 @@
     );
     line.dataset.optimistic = "1";
     msgList.appendChild(line);
-    msgList.scrollTop = msgList.scrollHeight;
+    scrollMessagesToBottom();
   }
 
   function appendIncomingMessage(msg) {
@@ -610,7 +618,7 @@
       msg.msg_type === "file" ? (msg.original_filename || "File") : ""
     );
     msgList.appendChild(line);
-    msgList.scrollTop = msgList.scrollHeight;
+    scrollMessagesToBottom();
   }
 
   async function pollNewMessages() {
