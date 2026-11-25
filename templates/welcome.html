@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Chatly{% endblock %}
+
+{% block extra_css %}
+<style>
+  .welcome-wrap {
+    padding: 18px 16px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .welcome-title {
+    font-size: 28px;
+    font-weight: 800;
+    line-height: 1.15;
+    color: var(--text);
+  }
+
+  .welcome-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="welcome-wrap">
+  <div class="welcome-title">Chatly</div>
+  <div class="welcome-actions">
+    <a href="{{ url_for('register') }}" class="btn btn-primary" style="padding: 12px 14px; font-size: 14px;">Create Account</a>
+    <a href="{{ url_for('login') }}" class="btn" style="padding: 12px 14px; font-size: 14px;">Log In</a>
+  </div>
+</div>
+{% endblock %}

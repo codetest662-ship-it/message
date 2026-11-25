@@ -52,7 +52,7 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     friend_number = db.Column(db.String(12), unique=True, nullable=False)
-    bio = db.Column(db.String(300), default="Hey there! I'm using Message.", nullable=False)
+    bio = db.Column(db.String(300), default="", nullable=False)
     pfp_filename = db.Column(db.String(255), nullable=True)
     pfp_data = db.Column(db.Text, nullable=True)
 
@@ -144,7 +144,7 @@ def login_required(fn):
             session.pop("user_id", None)
             if request.headers.get("X-Requested-With") == "XMLHttpRequest":
                 return jsonify({"error": "Unauthorized"}), 401
-            return redirect(url_for("login"))
+            return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
         return fn(*args, **kwargs)
 
     return wrapper
@@ -183,16 +183,138 @@ def is_blocked_between(u1_id, u2_id):
     return bool(rel1 or rel2)
 
 
-def is_muted(viewer_id, sender_id):
-    rel = Friendship.query.filter_by(user_id=viewer_id, friend_id=sender_id, muted=True).first()
-    return bool(rel)
-
-
 def format_12h_hh_mm(dt):
-    return dt.strftime("%I/%M %p")
+    return dt.strftime("%I:%M %p")
 
 
-# --- Auth Routes ---
+def get_friends_data(user_id):
+    outgoing = Friendship.query.filter_by(user_id=user_id).all()
+    incoming = Friendship.query.filter_by(friend_id=user_id).all()
+
+    rel_map = {}
+    friend_ids_ordered = []
+    muted_user_ids = set()
+
+    for r in outgoing:
+        rel_map[r.friend_id] = r
+        if r.muted:
+            muted_user_ids.add(r.friend_id)
+        if r.friend_id not in friend_ids_ordered and r.friend_id != user_id:
+            friend_ids_ordered.append(r.friend_id)
+
+    for r in incoming:
+        if r.user_id not in rel_map:
+            rel_map[r.user_id] = r
+        if r.user_id not in friend_ids_ordered and r.user_id != user_id:
+            friend_ids_ordered.append(r.user_id)
+
+    friend_users_by_id = {}
+    if friend_ids_ordered:
+        for f_user in User.query.filter(User.id.in_(friend_ids_ordered)).all():
+            friend_users_by_id[f_user.id] = f_user
+    friends = [friend_users_by_id[fid] for fid in friend_ids_ordered if fid in friend_users_by_id]
+    return friends, rel_map, muted_user_ids, friend_users_by_id
+
+
+def get_user_rooms_sidebar(user_id, extra_users_by_id=None):
+    users_cache = dict(extra_users_by_id or {})
+    my_memberships = ChatMember.query.filter_by(user_id=user_id).all()
+    my_room_ids = [m.room_id for m in my_memberships]
+
+    rooms_by_id = {}
+    if my_room_ids:
+        for r in ChatRoom.query.filter(ChatRoom.id.in_(my_room_ids)).all():
+            rooms_by_id[r.id] = r
+
+    all_room_members = []
+    if my_room_ids:
+        all_room_members = ChatMember.query.filter(ChatMember.room_id.in_(my_room_ids)).all()
+
+    other_user_id_by_room = {}
+    needed_user_ids = set()
+    for mem in all_room_members:
+        if mem.user_id != user_id and mem.room_id not in other_user_id_by_room:
+            other_user_id_by_room[mem.room_id] = mem.user_id
+            needed_user_ids.add(mem.user_id)
+
+    missing_uids = [uid for uid in needed_user_ids if uid not in users_cache]
+    if missing_uids:
+        for u in User.query.filter(User.id.in_(missing_uids)).all():
+            users_cache[u.id] = u
+
+    rooms_sidebar = []
+    for rid in my_room_ids:
+        room = rooms_by_id.get(rid)
+        if not room:
+            continue
+        if room.is_group:
+            rooms_sidebar.append({
+                "room": room,
+                "url": url_for("chat_room", room_id=room.id),
+                "title": room.name or "",
+                "avatar_src": None,
+                "is_group": True,
+                "other_user": None,
+            })
+        else:
+            other_id = other_user_id_by_room.get(room.id)
+            other = users_cache.get(other_id) if other_id else None
+            rooms_sidebar.append({
+                "room": room,
+                "url": url_for("chat_room", room_id=room.id),
+                "title": other.username if other else "",
+                "avatar_src": other.avatar_src if other else None,
+                "is_group": False,
+                "other_user": other,
+            })
+
+    return rooms_sidebar, rooms_by_id, other_user_id_by_room, users_cache
+
+
+def get_shared_media_for_pair(viewer_id, target_id):
+    viewer_rooms = {m.room_id for m in ChatMember.query.filter_by(user_id=viewer_id).all()}
+    if viewer_id == target_id:
+        shared_room_ids = list(viewer_rooms)
+    else:
+        target_rooms = {m.room_id for m in ChatMember.query.filter_by(user_id=target_id).all()}
+        shared_room_ids = list(viewer_rooms.intersection(target_rooms))
+
+    if not shared_room_ids:
+        return []
+
+    media_msgs = (
+        Message.query.filter(
+            Message.room_id.in_(shared_room_ids),
+            Message.file_filename.isnot(None),
+        )
+        .order_by(Message.id.desc())
+        .limit(12)
+        .all()
+    )
+
+    items = []
+    for m in media_msgs:
+        ext = os.path.splitext((m.original_filename or m.file_filename or "").lower())[1]
+        is_image = ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        items.append({
+            "id": m.id,
+            "filename": m.file_filename,
+            "label": m.original_filename or m.file_filename,
+            "is_image": is_image,
+            "url": url_for("uploaded_file", filename=m.file_filename),
+            "download_url": url_for("uploaded_file", filename=m.file_filename, download=1),
+        })
+    return items
+
+
+# --- Auth & Entry Routes ---
+@app.route("/welcome")
+def welcome():
+    if current_user():
+        return redirect(url_for("index"))
+    return render_template("welcome.html")
+
+
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if current_user():
@@ -202,7 +324,7 @@ def register():
         username = request.form.get("username", "").strip()
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
-        bio = request.form.get("bio", "").strip() or "Hey there! I'm using Message."
+        bio = request.form.get("bio", "").strip()
 
         if not username or not email or not password:
             flash("Username, email, and password are required.")
@@ -237,6 +359,10 @@ def login():
     if current_user():
         return redirect(url_for("index"))
 
+    next_url = request.args.get("next") or request.form.get("next") or ""
+    if not next_url.startswith("/"):
+        next_url = url_for("index")
+
     if request.method == "POST":
         identifier = request.form.get("identifier", "").strip()
         password = request.form.get("password", "")
@@ -248,11 +374,11 @@ def login():
         if user and user.check_password(password):
             session["user_id"] = user.id
             g._cached_user = user
-            return redirect(url_for("index"))
+            return redirect(next_url)
 
         flash("Invalid credentials.")
 
-    return render_template("login.html")
+    return render_template("login.html", next_url=next_url)
 
 
 @app.route("/forgot-password", methods=["GET", "POST"])
@@ -263,12 +389,12 @@ def forgot_password():
         user = User.query.filter_by(email=email).first()
 
         if not user or not new_password:
-            flash("If that email exists and a new password was entered, your password has been updated.")
+            flash("If that account exists, the password has been updated.")
             return render_template("forgot_password.html")
 
         user.set_password(new_password)
         db.session.commit()
-        flash("Password reset complete. You can now log in.")
+        flash("Password updated.")
         return redirect(url_for("login"))
 
     return render_template("forgot_password.html")
@@ -282,36 +408,66 @@ def logout():
     return redirect(url_for("login"))
 
 
-# --- Profile Routes ---
+# --- Profile Routes (/profile and /profile/<id>) ---
 @app.route("/profile", methods=["GET", "POST"])
+@app.route("/profile/<int:target_user_id>", methods=["GET"])
 @login_required
-def profile():
-    user = current_user()
-    if request.method == "POST":
+def profile(target_user_id=None):
+    me = current_user()
+    viewed_user = me if not target_user_id else db.session.get(User, target_user_id)
+    if not viewed_user:
+        flash("User not found.")
+        return redirect(url_for("profile"))
+
+    is_self = viewed_user.id == me.id
+
+    if request.method == "POST" and is_self:
         username = request.form.get("username", "").strip()
         bio = request.form.get("bio", "").strip()
 
-        if username and username != user.username:
+        if username and username != me.username:
             if User.query.filter_by(username=username).first():
-                flash("That username is already taken.")
+                flash("Username is already taken.")
                 return redirect(url_for("profile"))
-            user.username = username
+            me.username = username
 
-        if bio is not None:
-            user.bio = bio
+        me.bio = bio
 
         new_pfp = encode_pfp_data_url(request.files.get("pfp"))
         if new_pfp:
-            user.pfp_data = new_pfp
+            me.pfp_data = new_pfp
 
         db.session.commit()
-        flash("Profile updated.")
+        flash("Profile saved.")
         return redirect(url_for("profile"))
 
-    return render_template("profile.html", user=user)
+    shared_media = get_shared_media_for_pair(me.id, viewed_user.id)
+
+    return render_template(
+        "profile.html",
+        user=me,
+        viewed_user=viewed_user,
+        is_self=is_self,
+        shared_media=shared_media,
+        active_nav="profile",
+    )
 
 
-# --- Friends & Relationships ---
+# --- Friends Route (/friends) ---
+@app.route("/friends", methods=["GET"])
+@login_required
+def friends_page():
+    user = current_user()
+    friends, rel_map, _, _ = get_friends_data(user.id)
+    return render_template(
+        "friends.html",
+        user=user,
+        friends=friends,
+        rel_map=rel_map,
+        active_nav="friends",
+    )
+
+
 @app.route("/friends/add", methods=["POST"])
 @login_required
 def add_friend():
@@ -321,15 +477,15 @@ def add_friend():
 
     if not target:
         flash("No user found with that Friend Number.")
-        return redirect(url_for("index", tab="friends"))
+        return redirect(url_for("friends_page"))
 
     if target.id == user.id:
-        flash("You cannot add yourself.")
-        return redirect(url_for("index", tab="friends"))
+        flash("Cannot add your own Friend Number.")
+        return redirect(url_for("friends_page"))
 
     if is_blocked_between(user.id, target.id):
-        flash("Cannot add this user due to a block.")
-        return redirect(url_for("index", tab="friends"))
+        flash("User is blocked.")
+        return redirect(url_for("friends_page"))
 
     existing = Friendship.query.filter_by(user_id=user.id, friend_id=target.id).first()
     if not existing:
@@ -340,8 +496,8 @@ def add_friend():
         db.session.add(Friendship(user_id=target.id, friend_id=user.id, status="accepted"))
 
     db.session.commit()
-    flash(f"Added {target.username} as a friend!")
-    return redirect(url_for("index", tab="friends"))
+    flash(f"Added {target.username}.")
+    return redirect(url_for("friends_page"))
 
 
 @app.route("/friends/action", methods=["POST"])
@@ -353,21 +509,21 @@ def friend_action():
     target = db.session.get(User, target_id)
 
     if not target or target.id == user.id:
-        return redirect(url_for("index", tab="friends"))
+        return redirect(url_for("friends_page"))
 
     rel = Friendship.query.filter_by(user_id=user.id, friend_id=target.id).first()
 
     if action == "unfriend":
         Friendship.query.filter_by(user_id=user.id, friend_id=target.id).delete()
         Friendship.query.filter_by(user_id=target.id, friend_id=user.id).delete()
-        flash(f"Unfriended {target.username}.")
+        flash(f"Removed {target.username}.")
     elif action == "mute":
         if not rel:
             rel = Friendship(user_id=user.id, friend_id=target.id, status="accepted", muted=True)
             db.session.add(rel)
         else:
             rel.muted = not rel.muted
-        flash(f"{'Muted' if rel.muted else 'Unmuted'} {target.username}.")
+        flash("Muted." if rel.muted else "Unmuted.")
     elif action == "block":
         if not rel:
             rel = Friendship(user_id=user.id, friend_id=target.id, status="blocked", muted=True)
@@ -383,10 +539,10 @@ def friend_action():
         flash(f"Unblocked {target.username}.")
 
     db.session.commit()
-    return redirect(url_for("index", tab="friends"))
+    return redirect(url_for("friends_page"))
 
 
-# --- Chats (DMs + Group Chats) ---
+# --- Chats, Group Creation & Individual Room Routes ---
 def get_or_create_dm(user_a_id, user_b_id):
     a_rooms = {m.room_id for m in ChatMember.query.filter_by(user_id=user_a_id).all()}
     b_rooms = {m.room_id for m in ChatMember.query.filter_by(user_id=user_b_id).all()}
@@ -412,28 +568,42 @@ def open_dm(friend_id):
     if not friend or friend.id == user.id:
         return redirect(url_for("index"))
     room = get_or_create_dm(user.id, friend.id)
-    return redirect(url_for("index", room_id=room.id, tab="chats"))
+    return redirect(url_for("chat_room", room_id=room.id))
 
 
-@app.route("/groups/create", methods=["POST"])
+@app.route("/groups/create", methods=["GET", "POST"])
 @login_required
 def create_group():
     user = current_user()
-    group_name = request.form.get("group_name", "").strip() or "Group Chat"
-    member_ids = [int(x) for x in request.form.getlist("member_ids") if x.isdigit()]
+    friends, _, _, _ = get_friends_data(user.id)
 
-    room = ChatRoom(name=group_name, is_group=True, created_by=user.id)
-    db.session.add(room)
-    db.session.flush()
+    if request.method == "POST":
+        group_name = request.form.get("group_name", "").strip()
+        if not group_name:
+            flash("Enter a group name.")
+            return redirect(url_for("create_group"))
 
-    all_members = set(member_ids + [user.id])
-    for mid in all_members:
-        if db.session.get(User, mid):
-            db.session.add(ChatMember(room_id=room.id, user_id=mid))
+        member_ids = [int(x) for x in request.form.getlist("member_ids") if x.isdigit()]
 
-    db.session.commit()
-    flash(f"Group '{group_name}' created!")
-    return redirect(url_for("index", room_id=room.id, tab="chats"))
+        room = ChatRoom(name=group_name, is_group=True, created_by=user.id)
+        db.session.add(room)
+        db.session.flush()
+
+        all_members = set(member_ids + [user.id])
+        for mid in all_members:
+            if db.session.get(User, mid):
+                db.session.add(ChatMember(room_id=room.id, user_id=mid))
+
+        db.session.commit()
+        flash(f"Created {group_name}.")
+        return redirect(url_for("chat_room", room_id=room.id))
+
+    return render_template(
+        "create_group.html",
+        user=user,
+        friends=friends,
+        active_nav="chats",
+    )
 
 
 @app.route("/index")
@@ -441,139 +611,79 @@ def create_group():
 @login_required
 def index():
     user = current_user()
+    _, _, _, friend_users_by_id = get_friends_data(user.id)
+    rooms_sidebar, _, _, _ = get_user_rooms_sidebar(user.id, friend_users_by_id)
+    return render_template(
+        "chats_list.html",
+        user=user,
+        rooms_sidebar=rooms_sidebar,
+        active_nav="chats",
+    )
+
+
+@app.route("/chat/<int:room_id>", methods=["GET"])
+@login_required
+def chat_room(room_id):
+    user = current_user()
+    if not ChatMember.query.filter_by(room_id=room_id, user_id=user.id).first():
+        flash("You are not a member of this chat.")
+        return redirect(url_for("index"))
+
     search_q = request.args.get("search", "").strip()
-    active_room_id = request.args.get("room_id", type=int)
-    active_tab = request.args.get("tab", "chats")
-    if active_tab not in ("chats", "friends", "groups"):
-        active_tab = "chats"
+    _, _, muted_user_ids, friend_users_by_id = get_friends_data(user.id)
+    rooms_sidebar, rooms_by_id, other_user_id_by_room, users_cache = get_user_rooms_sidebar(
+        user.id, friend_users_by_id
+    )
 
-    outgoing = Friendship.query.filter_by(user_id=user.id).all()
-    incoming = Friendship.query.filter_by(friend_id=user.id).all()
+    active_room = rooms_by_id.get(room_id)
+    if not active_room:
+        return redirect(url_for("index"))
 
-    rel_map = {}
-    friend_ids_ordered = []
-    muted_user_ids = set()
+    active_room_title = ""
+    active_room_other_user = None
+    if active_room.is_group:
+        active_room_title = active_room.name or ""
+    else:
+        other_id = other_user_id_by_room.get(active_room.id)
+        other = users_cache.get(other_id) if other_id else None
+        active_room_other_user = other
+        active_room_title = other.username if other else ""
 
-    for r in outgoing:
-        rel_map[r.friend_id] = r
-        if r.muted:
-            muted_user_ids.add(r.friend_id)
-        if r.friend_id not in friend_ids_ordered and r.friend_id != user.id:
-            friend_ids_ordered.append(r.friend_id)
+    q = Message.query.filter_by(room_id=active_room.id)
+    if search_q:
+        q = q.filter(Message.body.ilike(f"%{search_q}%"))
+    raw_msgs = q.order_by(Message.id.asc()).all()
 
-    for r in incoming:
-        if r.user_id not in rel_map:
-            rel_map[r.user_id] = r
-        if r.user_id not in friend_ids_ordered and r.user_id != user.id:
-            friend_ids_ordered.append(r.user_id)
-
-    friend_users_by_id = {}
-    if friend_ids_ordered:
-        for f_user in User.query.filter(User.id.in_(friend_ids_ordered)).all():
-            friend_users_by_id[f_user.id] = f_user
-    friends = [friend_users_by_id[fid] for fid in friend_ids_ordered if fid in friend_users_by_id]
-
-    my_memberships = ChatMember.query.filter_by(user_id=user.id).all()
-    my_room_ids = [m.room_id for m in my_memberships]
-
-    rooms_by_id = {}
-    if my_room_ids:
-        for r in ChatRoom.query.filter(ChatRoom.id.in_(my_room_ids)).all():
-            rooms_by_id[r.id] = r
-
-    all_room_members = []
-    if my_room_ids:
-        all_room_members = ChatMember.query.filter(ChatMember.room_id.in_(my_room_ids)).all()
-
-    other_user_id_by_room = {}
-    needed_user_ids = set()
-    for mem in all_room_members:
-        if mem.user_id != user.id and mem.room_id not in other_user_id_by_room:
-            other_user_id_by_room[mem.room_id] = mem.user_id
-            needed_user_ids.add(mem.user_id)
-
-    extra_users_by_id = dict(friend_users_by_id)
-    missing_uids = [uid for uid in needed_user_ids if uid not in extra_users_by_id]
-    if missing_uids:
-        for u in User.query.filter(User.id.in_(missing_uids)).all():
-            extra_users_by_id[u.id] = u
-
-    rooms_sidebar = []
-    for rid in my_room_ids:
-        room = rooms_by_id.get(rid)
-        if not room:
-            continue
-        if room.is_group:
-            rooms_sidebar.append({
-                "room": room,
-                "title": room.name or f"Group #{room.id}",
-                "avatar_src": None,
-                "is_group": True,
-                "other_user": None,
-            })
-        else:
-            other_id = other_user_id_by_room.get(room.id)
-            other = extra_users_by_id.get(other_id) if other_id else None
-            rooms_sidebar.append({
-                "room": room,
-                "title": other.username if other else "Direct Message",
-                "avatar_src": other.avatar_src if other else None,
-                "is_group": False,
-                "other_user": other,
-            })
-
-    active_room = None
-    if active_room_id and active_room_id in rooms_by_id:
-        active_room = rooms_by_id[active_room_id]
-    elif rooms_sidebar:
-        active_room = rooms_sidebar[0]["room"]
-
-    active_room_title = "Direct Message"
-    if active_room:
-        if active_room.is_group:
-            active_room_title = active_room.name or f"Group #{active_room.id}"
-        else:
-            other_id = other_user_id_by_room.get(active_room.id)
-            other = extra_users_by_id.get(other_id) if other_id else None
-            active_room_title = other.username if other else "Direct Message"
+    sender_ids = {m.sender_id for m in raw_msgs if m.sender_id not in users_cache}
+    if sender_ids:
+        for s in User.query.filter(User.id.in_(sender_ids)).all():
+            users_cache[s.id] = s
 
     messages_view = []
-    if active_room:
-        q = Message.query.filter_by(room_id=active_room.id)
-        if search_q:
-            q = q.filter(Message.body.ilike(f"%{search_q}%"))
-        raw_msgs = q.order_by(Message.id.asc()).all()
-
-        sender_ids = {m.sender_id for m in raw_msgs if m.sender_id not in extra_users_by_id}
-        if sender_ids:
-            for s in User.query.filter(User.id.in_(sender_ids)).all():
-                extra_users_by_id[s.id] = s
-
-        for msg in raw_msgs:
-            muted_sender = msg.sender_id in muted_user_ids
-            sender_obj = extra_users_by_id.get(msg.sender_id) or msg.sender
-            messages_view.append({
-                "id": msg.id,
-                "sender": sender_obj,
-                "body": "[Muted user message]" if muted_sender else (msg.body or ""),
-                "msg_type": msg.msg_type,
-                "file_filename": None if muted_sender else msg.file_filename,
-                "original_filename": None if muted_sender else msg.original_filename,
-                "time_str": format_12h_hh_mm(msg.created_at),
-                "muted": muted_sender,
-            })
+    for msg in raw_msgs:
+        muted_sender = msg.sender_id in muted_user_ids
+        sender_obj = users_cache.get(msg.sender_id) or msg.sender
+        messages_view.append({
+            "id": msg.id,
+            "sender": sender_obj,
+            "body": "[Muted]" if muted_sender else (msg.body or ""),
+            "msg_type": msg.msg_type,
+            "file_filename": None if muted_sender else msg.file_filename,
+            "original_filename": None if muted_sender else msg.original_filename,
+            "time_str": format_12h_hh_mm(msg.created_at),
+            "muted": muted_sender,
+        })
 
     return render_template(
-        "index.html",
+        "chat_room.html",
         user=user,
-        friends=friends,
-        rel_map=rel_map,
         rooms_sidebar=rooms_sidebar,
         active_room=active_room,
         active_room_title=active_room_title,
+        active_room_other_user=active_room_other_user,
         messages=messages_view,
         search_q=search_q,
-        active_tab=active_tab,
+        active_nav="chats",
     )
 
 
@@ -603,16 +713,17 @@ def api_messages(room_id):
     for m in new_msgs:
         muted_sender = m.sender_id in muted_user_ids
         sender = senders.get(m.sender_id)
-        sender_name = sender.username if sender else "User"
+        sender_name = sender.username if sender else ""
         file_fn = None if muted_sender else (m.file_filename or "")
         orig_fn = None if muted_sender else (m.original_filename or "")
 
         payload.append({
             "id": m.id,
+            "sender_id": m.sender_id,
             "sender_name": sender_name,
-            "sender_initial": sender_name[0].upper() if sender_name else "?",
+            "sender_initial": sender_name[0].upper() if sender_name else "",
             "time_str": format_12h_hh_mm(m.created_at),
-            "body": "[Muted user message]" if muted_sender else (m.body or ""),
+            "body": "[Muted]" if muted_sender else (m.body or ""),
             "msg_type": m.msg_type or "text",
             "file_filename": file_fn,
             "original_filename": orig_fn,
@@ -641,7 +752,7 @@ def send_message(room_id):
             if is_ajax:
                 return jsonify({"error": "Messaging is blocked between you and this user."}), 403
             flash("Messaging is blocked between you and this user.")
-            return redirect(url_for("index", room_id=room_id))
+            return redirect(url_for("chat_room", room_id=room_id))
 
     body = request.form.get("body", "").strip()
     msg_type = "text"
@@ -661,7 +772,7 @@ def send_message(room_id):
     if not body and not stored_file:
         if is_ajax:
             return jsonify({"error": "Empty message"}), 400
-        return redirect(url_for("index", room_id=room_id))
+        return redirect(url_for("chat_room", room_id=room_id))
 
     msg = Message(
         room_id=room_id,
@@ -679,8 +790,9 @@ def send_message(room_id):
             "ok": True,
             "message": {
                 "id": msg.id,
+                "sender_id": user.id,
                 "sender_name": user.username,
-                "sender_initial": user.username[0].upper() if user.username else "?",
+                "sender_initial": user.username[0].upper() if user.username else "",
                 "time_str": format_12h_hh_mm(msg.created_at),
                 "body": msg.body or "",
                 "msg_type": msg.msg_type,
@@ -690,7 +802,7 @@ def send_message(room_id):
             },
         })
 
-    return redirect(url_for("index", room_id=room_id, tab="chats"))
+    return redirect(url_for("chat_room", room_id=room_id))
 
 
 @app.route("/uploads/<filename>")

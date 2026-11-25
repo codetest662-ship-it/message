@@ -1,37 +1,166 @@
 {% extends "base.html" %}
-{% block title %}Profile — Message{% endblock %}
+{% block title %}Profile — Chatly{% endblock %}
+
+{% block extra_css %}
+<style>
+  .profile-wrap {
+    padding: 10px 14px 16px;
+  }
+
+  .profile-hero {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 14px;
+  }
+
+  .profile-avatar {
+    width: 68px;
+    height: 68px;
+    border-radius: 50%;
+    object-fit: cover;
+    background-color: var(--panel-2);
+    border: 2px solid var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text);
+    flex-shrink: 0;
+  }
+
+  .info-row {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .info-label {
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 3px;
+  }
+
+  .info-val {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    word-break: break-word;
+  }
+
+  .media-section {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+
+  .media-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .media-thumb {
+    aspect-ratio: 1 / 1;
+    border-radius: 12px;
+    overflow: hidden;
+    background-color: var(--panel-2);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    padding: 6px;
+    text-align: center;
+    color: var(--text);
+  }
+
+  .media-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="auth-card">
-  <h1>Profile</h1>
-  <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 18px;">
-    {% if user.avatar_src %}
-      <img src="{{ user.avatar_src }}" alt="PFP" style="width: 72px; height: 72px; border-radius: 50%; object-fit: cover; border: 2px solid var(--accent);" />
+<div class="profile-wrap">
+  <div class="profile-hero">
+    {% if viewed_user.avatar_src %}
+      <img src="{{ viewed_user.avatar_src }}" alt="Avatar" class="profile-avatar" />
     {% else %}
-      <div style="width: 72px; height: 72px; border-radius: 50%; background: var(--panel-2); display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700;">
-        {{ user.username[0]|upper }}
-      </div>
+      <div class="profile-avatar">{{ viewed_user.username[0]|upper }}</div>
     {% endif %}
-    <div>
-      <div style="font-size: 18px; font-weight: 700;">{{ user.username }}</div>
-      <div style="font-size: 13px; color: var(--muted);">Friend Number: <strong>{{ user.friend_number }}</strong></div>
-      <div style="font-size: 13px; color: var(--muted); margin-top: 4px;">{{ user.bio }}</div>
+
+    <div style="min-width: 0;">
+      <div style="font-size: 18px; font-weight: 700; color: var(--text);">{{ viewed_user.username }}</div>
+      <div style="font-size: 12px; color: var(--accent); font-weight: 700; margin-top: 3px;">
+        Friend Number: {{ viewed_user.friend_number }}
+      </div>
     </div>
   </div>
 
-  <form method="POST" action="/profile" enctype="multipart/form-data">
-    <div class="field">
-      <label for="username">Edit Username</label>
-      <input id="username" type="text" name="username" value="{{ user.username }}" required />
+  <div class="info-row">
+    <div class="info-label">Username</div>
+    <div class="info-val">{{ viewed_user.username }}</div>
+  </div>
+
+  <div class="info-row">
+    <div class="info-label">Friend Number</div>
+    <div class="info-val">{{ viewed_user.friend_number }}</div>
+  </div>
+
+  <div class="info-row" style="border-bottom: none;">
+    <div class="info-label">Bio</div>
+    <div class="info-val" style="font-weight: 400; color: var(--muted);">
+      {{ viewed_user.bio }}
     </div>
-    <div class="field">
-      <label for="bio">Edit Bio</label>
-      <textarea id="bio" name="bio" rows="3">{{ user.bio }}</textarea>
+  </div>
+
+  {% if shared_media %}
+    <div class="media-section">
+      <div style="font-size: 13px; font-weight: 700; color: var(--text);">Media Shared</div>
+      <div class="media-grid">
+        {% for item in shared_media %}
+          <a href="{{ item.download_url }}" class="media-thumb" title="{{ item.label }}">
+            {% if item.is_image %}
+              <img src="{{ item.url }}" alt="{{ item.label }}" />
+            {% else %}
+              <span>{{ item.label }}</span>
+            {% endif %}
+          </a>
+        {% endfor %}
+      </div>
     </div>
-    <div class="field">
-      <label for="pfp">Update Profile Picture</label>
-      <input id="pfp" type="file" name="pfp" accept="image/*" />
+  {% endif %}
+
+  {% if is_self %}
+    <form method="POST" action="{{ url_for('profile') }}" enctype="multipart/form-data">
+      <div class="field">
+        <label for="username">Username</label>
+        <input id="username" type="text" name="username" value="{{ viewed_user.username }}" required />
+      </div>
+      <div class="field">
+        <label for="bio">Bio</label>
+        <textarea id="bio" name="bio" rows="3">{{ viewed_user.bio }}</textarea>
+      </div>
+      <div class="field">
+        <label for="pfp">Profile Picture</label>
+        <input id="pfp" type="file" name="pfp" accept="image/*" />
+      </div>
+      <button type="submit" class="btn btn-primary" style="width: 100%; padding: 10px;">Save Changes</button>
+    </form>
+  {% else %}
+    <div style="display: flex; gap: 8px; margin-top: 12px;">
+      <a href="{{ url_for('open_dm', friend_id=viewed_user.id) }}" class="btn btn-primary" style="flex: 1; padding: 10px;">Message</a>
+      <a href="{{ url_for('profile') }}" class="btn" style="padding: 10px;">My Profile</a>
     </div>
-    <button type="submit" class="btn btn-primary" style="width: 100%;">Save Profile</button>
-  </form>
+  {% endif %}
 </div>
 {% endblock %}

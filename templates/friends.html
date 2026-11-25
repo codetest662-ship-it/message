@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Friends — Chatly{% endblock %}
+
+{% block extra_css %}
+<style>
+  .page-wrap {
+    padding: 10px 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .card {
+    background-color: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 12px;
+  }
+
+  .avatar {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    object-fit: cover;
+    background-color: #dfeae6;
+    color: var(--text);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .section-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  .mobile-input {
+    width: 100%;
+    padding: 9px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background-color: var(--sheet-bg);
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .friend-card {
+    background-color: var(--sheet-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px;
+    margin-bottom: 8px;
+  }
+
+  .friend-btns {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+
+  .btn-xs {
+    padding: 5px 8px;
+    font-size: 11px;
+    border-radius: 8px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-wrap">
+  <div class="card">
+    <div class="section-title">Add Friend</div>
+    <form method="POST" action="{{ url_for('add_friend') }}" style="display: flex; gap: 6px;">
+      <input type="text" name="friend_number" placeholder="Friend #" class="mobile-input" required />
+      <button type="submit" class="btn btn-primary btn-xs">Add</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Friends</div>
+    {% for f in friends %}
+      {% set rel = rel_map.get(f.id) %}
+      <div class="friend-card">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          {% if f.avatar_src %}
+            <img src="{{ f.avatar_src }}" class="avatar" alt="Avatar" />
+          {% else %}
+            <div class="avatar">{{ f.username[0]|upper }}</div>
+          {% endif %}
+          <div style="min-width: 0;">
+            <div style="font-weight: 700; font-size: 14px;">
+              <a href="{{ url_for('profile', target_user_id=f.id) }}" style="color: var(--text);">{{ f.username }}</a>
+              <span style="color: var(--muted); font-size: 11px;">#{{ f.friend_number }}</span>
+            </div>
+            <div style="font-size: 12px; color: var(--muted);">{{ f.bio }}</div>
+          </div>
+        </div>
+        <div class="friend-btns">
+          <a href="{{ url_for('open_dm', friend_id=f.id) }}" class="btn btn-primary btn-xs">Chat</a>
+          <a href="{{ url_for('profile', target_user_id=f.id) }}" class="btn btn-xs">Profile</a>
+          <form method="POST" action="{{ url_for('friend_action') }}" style="display: flex; gap: 4px; flex-wrap: wrap;">
+            <input type="hidden" name="target_id" value="{{ f.id }}" />
+            <button type="submit" name="action" value="mute" class="btn btn-xs">
+              {{ "Unmute" if rel and rel.muted else "Mute" }}
+            </button>
+            {% if rel and rel.status == "blocked" %}
+              <button type="submit" name="action" value="unblock" class="btn btn-xs">Unblock</button>
+            {% else %}
+              <button type="submit" name="action" value="block" class="btn btn-xs btn-danger">Block</button>
+            {% endif %}
+            <button type="submit" name="action" value="unfriend" class="btn btn-xs btn-danger">Unfriend</button>
+          </form>
+        </div>
+      </div>
+    {% else %}
+      <div style="font-size: 12px; color: var(--muted);">No friends yet.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
