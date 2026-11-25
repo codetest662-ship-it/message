@@ -1,56 +1,64 @@
-import base64
 import os
-import random
-import secrets
 import time
 from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import (
     Flask,
-    Response,
     flash,
     g,
     jsonify,
     redirect,
     render_template,
     request,
-    send_from_directory,
     session,
     url_for,
 )
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import inspect, text
-from werkzeug.security import check_password_hash, generate_password_hash
-from werkzeug.utils import secure_filename
+from sqlalchemy import event
+from werkzeug.security import check_password_hash
 
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB (checked, never stored)
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change-this-secret-key")
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 db_url = os.environ.get("DATABASE_URL")
-if db_url:
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    if db_url.startswith("postgresql://"):
-        db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+if not db_url:
+    raise RuntimeError("DATABASE_URL is required to read existing Neon data without local storage.")
 
-app.config["SQLALCHEMY_DATABASE_URI"] = db_url or f"sqlite:///{os.path.join(BASE_DIR, 'messenger.db')}"
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+if db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
-app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024 * 1024
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_pre_ping": True,
+    # Ask Postgres to enforce read-only transactions at the connection level
+    "connect_args": {"options": "-c default_transaction_read_only=on"},
+}
 
 db = SQLAlchemy(app)
-
-# In-memory typing tracker: {room_id: {user_id: {"username": str, "expires_at": float}}}
 TYPING_STATE = {}
 
 
-# --- Models ---
+class ReadOnlyStorageError(Exception):
+    """Raised when code attempts to write or store data."""
+
+
+@event.listens_for(db.session, "before_flush")
+def _block_session_writes(sess, flush_context, instances):
+    if sess.new or sess.dirty or sess.deleted:
+        sess.expunge_all()
+        raise ReadOnlyStorageError("Storage is disabled: changes are not saved.")
+
+
+# --- Read-Only Models (matches existing tables in Neon) ---
 class User(db.Model):
+    __tablename__ = "user"
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
@@ -59,10 +67,7 @@ class User(db.Model):
     bio = db.Column(db.String(300), default="", nullable=False)
     pfp_filename = db.Column(db.String(255), nullable=True)
     pfp_data = db.Column(db.Text, nullable=True)
-    last_seen = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
+    last_seen = db.Column(db.DateTime, nullable=True)
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
@@ -75,14 +80,11 @@ class User(db.Model):
 
     @property
     def avatar_src(self):
-        if self.pfp_data:
-            return self.pfp_data
-        if self.pfp_filename:
-            return url_for("uploaded_file", filename=self.pfp_filename)
-        return None
+        return self.pfp_data or None
 
 
 class Friendship(db.Model):
+    __tablename__ = "friendship"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     friend_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
@@ -91,6 +93,7 @@ class Friendship(db.Model):
 
 
 class ChatRoom(db.Model):
+    __tablename__ = "chat_room"
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=True)
     is_group = db.Column(db.Boolean, default=False, nullable=False)
@@ -98,6 +101,7 @@ class ChatRoom(db.Model):
 
 
 class ChatMember(db.Model):
+    __tablename__ = "chat_member"
     id = db.Column(db.Integer, primary_key=True)
     room_id = db.Column(db.Integer, db.ForeignKey("chat_room.id"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
@@ -105,12 +109,14 @@ class ChatMember(db.Model):
 
 
 class GroupBan(db.Model):
+    __tablename__ = "group_ban"
     id = db.Column(db.Integer, primary_key=True)
     room_id = db.Column(db.Integer, db.ForeignKey("chat_room.id"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
 
 
 class Message(db.Model):
+    __tablename__ = "message"
     id = db.Column(db.Integer, primary_key=True)
     room_id = db.Column(db.Integer, db.ForeignKey("chat_room.id"), nullable=False)
     sender_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
@@ -118,7 +124,6 @@ class Message(db.Model):
     msg_type = db.Column(db.String(20), default="text", nullable=False)
     file_filename = db.Column(db.String(255), nullable=True)
     original_filename = db.Column(db.String(255), nullable=True)
-    file_data = db.Column(db.Text, nullable=True)
     file_mime = db.Column(db.String(120), nullable=True)
     reply_to_id = db.Column(db.Integer, db.ForeignKey("message.id"), nullable=True)
     is_read = db.Column(db.Boolean, default=False, nullable=False)
@@ -127,61 +132,13 @@ class Message(db.Model):
     sender = db.relationship("User", foreign_keys=[sender_id])
     reply_to = db.relationship("Message", remote_side=[id])
 
-    @property
-    def media_url(self):
-        if self.file_data:
-            return self.file_data
-        if self.file_filename:
-            return f"/uploads/{self.file_filename}"
-        return ""
 
-
-def ensure_schema_columns():
-    db.create_all()
-    inspector = inspect(db.engine)
-    tables = set(inspector.get_table_names())
-
-    if "user" in tables:
-        cols = {c["name"] for c in inspector.get_columns("user")}
-        if "pfp_data" not in cols:
-            with db.engine.begin() as conn:
-                conn.execute(text('ALTER TABLE "user" ADD COLUMN pfp_data TEXT'))
-        if "last_seen" not in cols:
-            with db.engine.begin() as conn:
-                conn.execute(text('ALTER TABLE "user" ADD COLUMN last_seen TIMESTAMP'))
-
-    if "chat_member" in tables:
-        cols = {c["name"] for c in inspector.get_columns("chat_member")}
-        if "timeout_until" not in cols:
-            with db.engine.begin() as conn:
-                conn.execute(text("ALTER TABLE chat_member ADD COLUMN timeout_until TIMESTAMP"))
-
-    if "message" in tables:
-        cols = {c["name"] for c in inspector.get_columns("message")}
-        if "reply_to_id" not in cols:
-            with db.engine.begin() as conn:
-                conn.execute(text('ALTER TABLE "message" ADD COLUMN reply_to_id INTEGER'))
-        if "is_read" not in cols:
-            with db.engine.begin() as conn:
-                conn.execute(text('ALTER TABLE "message" ADD COLUMN is_read BOOLEAN DEFAULT FALSE'))
-        if "file_data" not in cols:
-            with db.engine.begin() as conn:
-                conn.execute(text('ALTER TABLE "message" ADD COLUMN file_data TEXT'))
-        if "file_mime" not in cols:
-            with db.engine.begin() as conn:
-                conn.execute(text('ALTER TABLE "message" ADD COLUMN file_mime VARCHAR(120)'))
-
-
-with app.app_context():
-    ensure_schema_columns()
-
-
-# --- Helpers ---
-def generate_unique_friend_number():
-    while True:
-        num = f"{random.randint(100000, 999999)}-{random.randint(10, 99)}"
-        if not User.query.filter_by(friend_number=num).first():
-            return num
+@app.errorhandler(413)
+def handle_too_large(e):
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify({"error": "File exceeds 100 MB limit."}), 413
+    flash("File exceeds the 100 MB limit.")
+    return redirect(request.referrer or url_for("index"))
 
 
 def current_user():
@@ -189,11 +146,6 @@ def current_user():
         return g._cached_user
     uid = session.get("user_id")
     user = db.session.get(User, uid) if uid else None
-    if user:
-        now = datetime.utcnow()
-        if not user.last_seen or (now - user.last_seen).total_seconds() >= 20:
-            user.last_seen = now
-            db.session.commit()
     g._cached_user = user
     return user
 
@@ -212,55 +164,6 @@ def login_required(fn):
     return wrapper
 
 
-def encode_pfp_data_url(file_storage):
-    if not file_storage or not file_storage.filename:
-        return None
-    raw = file_storage.read()
-    if not raw:
-        return None
-    mime = file_storage.mimetype or "image/png"
-    b64 = base64.b64encode(raw).decode("utf-8")
-    return f"data:{mime};base64,{b64}"
-
-
-def save_uploaded_media(file_storage, prefix="file", max_db_bytes=5 * 1024 * 1024):
-    orig_name = file_storage.filename or f"{prefix}_upload"
-    ext = os.path.splitext(secure_filename(orig_name))[1]
-    stored_name = f"{prefix}_{secrets.token_hex(12)}{ext}"
-    mime = file_storage.mimetype or "application/octet-stream"
-
-    raw_bytes = file_storage.read()
-    data_url = None
-    if raw_bytes and len(raw_bytes) <= max_db_bytes:
-        b64 = base64.b64encode(raw_bytes).decode("utf-8")
-        data_url = f"data:{mime};base64,{b64}"
-
-    dest_path = os.path.join(UPLOAD_DIR, stored_name)
-    with open(dest_path, "wb") as out_f:
-        if raw_bytes:
-            out_f.write(raw_bytes)
-        else:
-            chunk_size = 1024 * 1024 * 4
-            while True:
-                chunk = file_storage.stream.read(chunk_size)
-                if not chunk:
-                    break
-                out_f.write(chunk)
-
-    return stored_name, orig_name, data_url, mime
-
-
-def is_image_filename(filename):
-    ext = os.path.splitext((filename or "").lower())[1]
-    return ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-
-
-def is_blocked_between(u1_id, u2_id):
-    rel1 = Friendship.query.filter_by(user_id=u1_id, friend_id=u2_id, status="blocked").first()
-    rel2 = Friendship.query.filter_by(user_id=u2_id, friend_id=u1_id, status="blocked").first()
-    return bool(rel1 or rel2)
-
-
 def iso_utc(dt):
     if not dt:
         return ""
@@ -272,22 +175,19 @@ def get_active_typing_users(room_id, viewer_id, muted_user_ids):
     room_map = TYPING_STATE.get(room_id)
     if not room_map:
         return []
-
     expired = [uid for uid, info in room_map.items() if info.get("expires_at", 0) <= now_ts]
     for uid in expired:
         del room_map[uid]
-
-    names = []
-    for uid, info in room_map.items():
-        if uid != viewer_id and uid not in muted_user_ids and info.get("username"):
-            names.append(info["username"])
-    return names
+    return [
+        info["username"]
+        for uid, info in room_map.items()
+        if uid != viewer_id and uid not in muted_user_ids and info.get("username")
+    ]
 
 
 def get_friends_data(user_id):
     outgoing = Friendship.query.filter_by(user_id=user_id).all()
     incoming = Friendship.query.filter_by(friend_id=user_id).all()
-
     rel_map = {}
     friend_ids_ordered = []
     muted_user_ids = set()
@@ -305,10 +205,9 @@ def get_friends_data(user_id):
         if r.user_id not in friend_ids_ordered and r.user_id != user_id:
             friend_ids_ordered.append(r.user_id)
 
-    friend_users_by_id = {}
-    if friend_ids_ordered:
-        for f_user in User.query.filter(User.id.in_(friend_ids_ordered)).all():
-            friend_users_by_id[f_user.id] = f_user
+    friend_users_by_id = {
+        u.id: u for u in User.query.filter(User.id.in_(friend_ids_ordered)).all()
+    } if friend_ids_ordered else {}
     friends = [friend_users_by_id[fid] for fid in friend_ids_ordered if fid in friend_users_by_id]
     return friends, rel_map, muted_user_ids, friend_users_by_id
 
@@ -318,15 +217,11 @@ def get_user_rooms_sidebar(user_id, extra_users_by_id=None):
     my_memberships = ChatMember.query.filter_by(user_id=user_id).all()
     my_room_ids = [m.room_id for m in my_memberships]
 
-    rooms_by_id = {}
-    if my_room_ids:
-        for r in ChatRoom.query.filter(ChatRoom.id.in_(my_room_ids)).all():
-            rooms_by_id[r.id] = r
+    rooms_by_id = {
+        r.id: r for r in ChatRoom.query.filter(ChatRoom.id.in_(my_room_ids)).all()
+    } if my_room_ids else {}
 
-    all_room_members = []
-    if my_room_ids:
-        all_room_members = ChatMember.query.filter(ChatMember.room_id.in_(my_room_ids)).all()
-
+    all_room_members = ChatMember.query.filter(ChatMember.room_id.in_(my_room_ids)).all() if my_room_ids else []
     other_user_id_by_room = {}
     needed_user_ids = set()
     for mem in all_room_members:
@@ -368,54 +263,10 @@ def get_user_rooms_sidebar(user_id, extra_users_by_id=None):
     return rooms_sidebar, rooms_by_id, other_user_id_by_room, users_cache
 
 
-def get_shared_media_for_pair(viewer_id, target_id):
-    viewer_rooms = {m.room_id for m in ChatMember.query.filter_by(user_id=viewer_id).all()}
-    if viewer_id == target_id:
-        shared_room_ids = list(viewer_rooms)
-    else:
-        target_rooms = {m.room_id for m in ChatMember.query.filter_by(user_id=target_id).all()}
-        shared_room_ids = list(viewer_rooms.intersection(target_rooms))
-
-    if not shared_room_ids:
-        return []
-
-    media_msgs = (
-        Message.query.filter(
-            Message.room_id.in_(shared_room_ids),
-            db.or_(Message.file_filename.isnot(None), Message.file_data.isnot(None)),
-        )
-        .order_by(Message.id.desc())
-        .limit(12)
-        .all()
-    )
-
-    items = []
-    for m in media_msgs:
-        label = m.original_filename or m.file_filename or "Attachment"
-        items.append({
-            "id": m.id,
-            "filename": m.file_filename or label,
-            "label": label,
-            "is_image": is_image_filename(label) or bool((m.file_mime or "").startswith("image/")),
-            "url": m.media_url,
-            "download_url": url_for("uploaded_file", filename=m.file_filename, download=1) if m.file_filename else m.media_url,
-        })
-    return items
-
-
 def serialize_message(msg, user_id, muted_user_ids, users_cache, is_group_admin=False):
     muted_sender = msg.sender_id in muted_user_ids
     sender = users_cache.get(msg.sender_id) or msg.sender
     sender_name = sender.username if sender else ""
-    has_media = bool(msg.file_data or msg.file_filename)
-    file_fn = None if (muted_sender or not has_media) else (msg.file_filename or "")
-    orig_fn = None if (muted_sender or not has_media) else (msg.original_filename or file_fn or "Attachment")
-    media_url = "" if (muted_sender or not has_media) else msg.media_url
-    is_img = bool(
-        not muted_sender
-        and has_media
-        and (is_image_filename(orig_fn) or is_image_filename(file_fn) or (msg.file_mime or "").startswith("image/"))
-    )
 
     reply_info = None
     if msg.reply_to and not muted_sender:
@@ -423,7 +274,7 @@ def serialize_message(msg, user_id, muted_user_ids, users_cache, is_group_admin=
         reply_info = {
             "id": msg.reply_to.id,
             "sender_name": rep_sender.username if rep_sender else "User",
-            "body": msg.reply_to.body or (msg.reply_to.original_filename or "Attachment"),
+            "body": msg.reply_to.body or msg.reply_to.original_filename or "Attachment",
         }
 
     return {
@@ -436,19 +287,18 @@ def serialize_message(msg, user_id, muted_user_ids, users_cache, is_group_admin=
         "created_iso": iso_utc(msg.created_at),
         "body": "[Muted]" if muted_sender else (msg.body or ""),
         "msg_type": msg.msg_type or "text",
-        "file_filename": file_fn,
-        "original_filename": orig_fn,
-        "is_image": is_img,
-        "file_url": media_url,
-        "download_url": f"/uploads/{file_fn}?download=1" if file_fn else media_url,
+        "file_filename": None,
+        "original_filename": None if muted_sender else (msg.original_filename or ""),
+        "is_image": False,
+        "file_url": "",
+        "download_url": "",
         "is_read": bool(msg.is_read),
-        "can_delete": bool((msg.sender_id == user_id) or is_group_admin),
+        "can_delete": False,
         "status_label": ("Seen" if msg.is_read else "Delivered") if msg.sender_id == user_id else "",
         "reply_to": reply_info,
     }
 
 
-# --- Auth & Entry Routes ---
 @app.route("/welcome")
 def welcome():
     if current_user():
@@ -460,38 +310,8 @@ def welcome():
 def register():
     if current_user():
         return redirect(url_for("index"))
-
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        email = request.form.get("email", "").strip().lower()
-        password = request.form.get("password", "")
-        bio = request.form.get("bio", "").strip()
-
-        if not username or not email or not password:
-            flash("Username, email, and password are required.")
-            return render_template("register.html")
-
-        if User.query.filter((User.username == username) | (User.email == email)).first():
-            flash("Username or email is already taken.")
-            return render_template("register.html")
-
-        pfp_data = encode_pfp_data_url(request.files.get("pfp"))
-
-        user = User(
-            username=username,
-            email=email,
-            friend_number=generate_unique_friend_number(),
-            bio=bio,
-            pfp_data=pfp_data,
-        )
-        user.set_password(password)
-        db.session.add(user)
-        db.session.commit()
-
-        session["user_id"] = user.id
-        g._cached_user = user
-        return redirect(url_for("index"))
-
+        flash("Read-only mode: new account creation and storage are disabled.")
     return render_template("register.html")
 
 
@@ -499,47 +319,26 @@ def register():
 def login():
     if current_user():
         return redirect(url_for("index"))
-
     next_url = request.args.get("next") or request.form.get("next") or ""
     if not next_url.startswith("/"):
         next_url = url_for("index")
-
     if request.method == "POST":
         identifier = request.form.get("identifier", "").strip()
         password = request.form.get("password", "")
-
-        user = User.query.filter(
-            (User.username == identifier) | (User.email == identifier.lower())
-        ).first()
-
+        user = User.query.filter((User.username == identifier) | (User.email == identifier.lower())).first()
         if user and user.check_password(password):
             session["user_id"] = user.id
             g._cached_user = user
-            user.last_seen = datetime.utcnow()
-            db.session.commit()
             return redirect(next_url)
-
         flash("Invalid credentials.")
-
     return render_template("login.html", next_url=next_url)
 
 
 @app.route("/forgot-password", methods=["GET", "POST"])
 def forgot_password():
     if request.method == "POST":
-        email = request.form.get("email", "").strip().lower()
-        new_password = request.form.get("new_password", "")
-        user = User.query.filter_by(email=email).first()
-
-        if not user or not new_password:
-            flash("If that account exists, the password has been updated.")
-            return render_template("forgot_password.html")
-
-        user.set_password(new_password)
-        db.session.commit()
-        flash("Password updated.")
+        flash("Read-only mode: password changes cannot be saved.")
         return redirect(url_for("login"))
-
     return render_template("forgot_password.html")
 
 
@@ -551,7 +350,6 @@ def logout():
     return redirect(url_for("login"))
 
 
-# --- Profile Routes ---
 @app.route("/profile", methods=["GET", "POST"])
 @app.route("/profile/<int:target_user_id>", methods=["GET"])
 @login_required
@@ -561,155 +359,47 @@ def profile(target_user_id=None):
     if not viewed_user:
         flash("User not found.")
         return redirect(url_for("profile"))
-
-    is_self = viewed_user.id == me.id
-
-    if request.method == "POST" and is_self:
-        username = request.form.get("username", "").strip()
-        bio = request.form.get("bio", "").strip()
-
-        if username and username != me.username:
-            if User.query.filter_by(username=username).first():
-                flash("Username is already taken.")
-                return redirect(url_for("profile"))
-            me.username = username
-
-        me.bio = bio
-
-        new_pfp = encode_pfp_data_url(request.files.get("pfp"))
-        if new_pfp:
-            me.pfp_data = new_pfp
-
-        db.session.commit()
-        flash("Profile saved.")
+    if request.method == "POST":
+        flash("Read-only mode: profile updates are not saved.")
         return redirect(url_for("profile"))
-
-    shared_media = get_shared_media_for_pair(me.id, viewed_user.id)
-
     return render_template(
         "profile.html",
         user=me,
         viewed_user=viewed_user,
-        is_self=is_self,
-        shared_media=shared_media,
+        is_self=(viewed_user.id == me.id),
+        shared_media=[],
         active_nav="profile",
     )
 
 
-# --- Friends Routes ---
 @app.route("/friends", methods=["GET"])
 @login_required
 def friends_page():
     user = current_user()
     friends, rel_map, _, _ = get_friends_data(user.id)
-    return render_template(
-        "friends.html",
-        user=user,
-        friends=friends,
-        rel_map=rel_map,
-        active_nav="friends",
-    )
+    return render_template("friends.html", user=user, friends=friends, rel_map=rel_map, active_nav="friends")
 
 
 @app.route("/friends/add", methods=["POST"])
-@login_required
-def add_friend():
-    user = current_user()
-    target_num = request.form.get("friend_number", "").strip()
-    target = User.query.filter_by(friend_number=target_num).first()
-
-    if not target:
-        flash("No user found with that Friend Number.")
-        return redirect(url_for("friends_page"))
-
-    if target.id == user.id:
-        flash("Cannot add your own Friend Number.")
-        return redirect(url_for("friends_page"))
-
-    if is_blocked_between(user.id, target.id):
-        flash("User is blocked.")
-        return redirect(url_for("friends_page"))
-
-    if not Friendship.query.filter_by(user_id=user.id, friend_id=target.id).first():
-        db.session.add(Friendship(user_id=user.id, friend_id=target.id, status="accepted"))
-
-    if not Friendship.query.filter_by(user_id=target.id, friend_id=user.id).first():
-        db.session.add(Friendship(user_id=target.id, friend_id=user.id, status="accepted"))
-
-    db.session.commit()
-    flash(f"Added {target.username}.")
-    return redirect(url_for("friends_page"))
-
-
 @app.route("/friends/action", methods=["POST"])
 @login_required
-def friend_action():
-    user = current_user()
-    target_id = int(request.form.get("target_id", 0))
-    action = request.form.get("action", "")
-    target = db.session.get(User, target_id)
-
-    if not target or target.id == user.id:
-        return redirect(url_for("friends_page"))
-
-    rel = Friendship.query.filter_by(user_id=user.id, friend_id=target.id).first()
-
-    if action == "unfriend":
-        Friendship.query.filter_by(user_id=user.id, friend_id=target.id).delete()
-        Friendship.query.filter_by(user_id=target.id, friend_id=user.id).delete()
-        flash(f"Removed {target.username}.")
-    elif action == "mute":
-        if not rel:
-            rel = Friendship(user_id=user.id, friend_id=target.id, status="accepted", muted=True)
-            db.session.add(rel)
-        else:
-            rel.muted = not rel.muted
-        flash("Muted." if rel.muted else "Unmuted.")
-    elif action == "block":
-        if not rel:
-            rel = Friendship(user_id=user.id, friend_id=target.id, status="blocked", muted=True)
-            db.session.add(rel)
-        else:
-            rel.status = "blocked"
-            rel.muted = True
-        flash(f"Blocked {target.username}.")
-    elif action == "unblock":
-        if rel and rel.status == "blocked":
-            rel.status = "accepted"
-            rel.muted = False
-        flash(f"Unblocked {target.username}.")
-
-    db.session.commit()
+def friends_readonly_action():
+    flash("Read-only mode: friend list changes are not saved.")
     return redirect(url_for("friends_page"))
-
-
-# --- Chats, Groups & Moderation Routes ---
-def get_or_create_dm(user_a_id, user_b_id):
-    a_rooms = {m.room_id for m in ChatMember.query.filter_by(user_id=user_a_id).all()}
-    b_rooms = {m.room_id for m in ChatMember.query.filter_by(user_id=user_b_id).all()}
-    for rid in a_rooms.intersection(b_rooms):
-        room = db.session.get(ChatRoom, rid)
-        if room and not room.is_group:
-            return room
-
-    room = ChatRoom(name=None, is_group=False, created_by=user_a_id)
-    db.session.add(room)
-    db.session.flush()
-    db.session.add(ChatMember(room_id=room.id, user_id=user_a_id))
-    db.session.add(ChatMember(room_id=room.id, user_id=user_b_id))
-    db.session.commit()
-    return room
 
 
 @app.route("/dm/<int:friend_id>")
 @login_required
 def open_dm(friend_id):
     user = current_user()
-    friend = db.session.get(User, friend_id)
-    if not friend or friend.id == user.id:
-        return redirect(url_for("index"))
-    room = get_or_create_dm(user.id, friend.id)
-    return redirect(url_for("chat_room", room_id=room.id))
+    a_rooms = {m.room_id for m in ChatMember.query.filter_by(user_id=user.id).all()}
+    b_rooms = {m.room_id for m in ChatMember.query.filter_by(user_id=friend_id).all()}
+    for rid in a_rooms.intersection(b_rooms):
+        room = db.session.get(ChatRoom, rid)
+        if room and not room.is_group:
+            return redirect(url_for("chat_room", room_id=room.id))
+    flash("Read-only mode: cannot create a new chat room.")
+    return redirect(url_for("index"))
 
 
 @app.route("/groups/create", methods=["GET", "POST"])
@@ -717,145 +407,18 @@ def open_dm(friend_id):
 def create_group():
     user = current_user()
     friends, _, _, _ = get_friends_data(user.id)
-
     if request.method == "POST":
-        group_name = request.form.get("group_name", "").strip()
-        if not group_name:
-            flash("Enter a group name.")
-            return redirect(url_for("create_group"))
-
-        member_ids = [int(x) for x in request.form.getlist("member_ids") if x.isdigit()]
-
-        room = ChatRoom(name=group_name, is_group=True, created_by=user.id)
-        db.session.add(room)
-        db.session.flush()
-
-        all_members = set(member_ids + [user.id])
-        for mid in all_members:
-            if db.session.get(User, mid):
-                db.session.add(ChatMember(room_id=room.id, user_id=mid))
-
-        db.session.commit()
-        flash(f"Created {group_name}.")
-        return redirect(url_for("chat_room", room_id=room.id))
-
-    return render_template(
-        "create_group.html",
-        user=user,
-        friends=friends,
-        active_nav="chats",
-    )
+        flash("Read-only mode: new groups cannot be saved.")
+        return redirect(url_for("index"))
+    return render_template("create_group.html", user=user, friends=friends, active_nav="chats")
 
 
 @app.route("/groups/<int:room_id>/leave", methods=["POST"])
-@login_required
-def leave_group(room_id):
-    user = current_user()
-    room = db.session.get(ChatRoom, room_id)
-    if not room or not room.is_group:
-        return redirect(url_for("index"))
-
-    ChatMember.query.filter_by(room_id=room_id, user_id=user.id).delete()
-    remaining = ChatMember.query.filter_by(room_id=room_id).order_by(ChatMember.id.asc()).all()
-
-    if not remaining:
-        Message.query.filter_by(room_id=room_id).delete()
-        GroupBan.query.filter_by(room_id=room_id).delete()
-        db.session.delete(room)
-        db.session.commit()
-        flash("Left and removed empty group.")
-        return redirect(url_for("index"))
-
-    if room.created_by == user.id:
-        room.created_by = remaining[0].user_id
-
-    db.session.commit()
-    flash(f"Left {room.name}.")
-    return redirect(url_for("index"))
-
-
 @app.route("/groups/<int:room_id>/delete", methods=["POST"])
-@login_required
-def delete_group(room_id):
-    user = current_user()
-    room = db.session.get(ChatRoom, room_id)
-    if not room or not room.is_group:
-        return redirect(url_for("index"))
-
-    if room.created_by != user.id:
-        flash("Only the group admin can delete this group.")
-        return redirect(url_for("chat_room", room_id=room_id))
-
-    Message.query.filter_by(room_id=room_id).delete()
-    ChatMember.query.filter_by(room_id=room_id).delete()
-    GroupBan.query.filter_by(room_id=room_id).delete()
-    db.session.delete(room)
-    db.session.commit()
-    flash("Group deleted.")
-    return redirect(url_for("index"))
-
-
 @app.route("/groups/<int:room_id>/manage", methods=["POST"])
 @login_required
-def manage_group(room_id):
-    user = current_user()
-    room = db.session.get(ChatRoom, room_id)
-    if not room or not room.is_group:
-        flash("Group not found.")
-        return redirect(url_for("index"))
-
-    if room.created_by != user.id:
-        flash("Only the group admin can manage group settings or members.")
-        return redirect(url_for("chat_room", room_id=room_id))
-
-    action = request.form.get("action", "")
-
-    if action == "rename":
-        new_name = request.form.get("group_name", "").strip()
-        if new_name:
-            room.name = new_name
-            db.session.commit()
-            flash("Group name updated.")
-        return redirect(url_for("chat_room", room_id=room_id))
-
-    target_id = int(request.form.get("target_user_id", 0))
-    if target_id == user.id:
-        flash("You cannot perform this action on yourself.")
-        return redirect(url_for("chat_room", room_id=room_id))
-
-    member = ChatMember.query.filter_by(room_id=room_id, user_id=target_id).first()
-
-    if action == "transfer_admin":
-        if member:
-            room.created_by = target_id
-            db.session.commit()
-            flash("Admin rights transferred.")
-    elif action == "timeout":
-        minutes = max(1, int(request.form.get("minutes", 10) or 10))
-        if member:
-            member.timeout_until = datetime.utcnow() + timedelta(minutes=minutes)
-            db.session.commit()
-            flash(f"Timed out member for {minutes} minute(s).")
-    elif action == "remove_timeout":
-        if member:
-            member.timeout_until = None
-            db.session.commit()
-            flash("Timeout removed.")
-    elif action == "kick":
-        ChatMember.query.filter_by(room_id=room_id, user_id=target_id).delete()
-        db.session.commit()
-        flash("Member kicked from group.")
-    elif action == "ban":
-        ChatMember.query.filter_by(room_id=room_id, user_id=target_id).delete()
-        if not GroupBan.query.filter_by(room_id=room_id, user_id=target_id).first():
-            db.session.add(GroupBan(room_id=room_id, user_id=target_id))
-        db.session.commit()
-        flash("Member banned from group.")
-    elif action == "unban":
-        GroupBan.query.filter_by(room_id=room_id, user_id=target_id).delete()
-        db.session.commit()
-        flash("Member unbanned.")
-
+def group_readonly_action(room_id):
+    flash("Read-only mode: group changes are not saved.")
     return redirect(url_for("chat_room", room_id=room_id))
 
 
@@ -866,12 +429,7 @@ def index():
     user = current_user()
     _, _, _, friend_users_by_id = get_friends_data(user.id)
     rooms_sidebar, _, _, _ = get_user_rooms_sidebar(user.id, friend_users_by_id)
-    return render_template(
-        "chats_list.html",
-        user=user,
-        rooms_sidebar=rooms_sidebar,
-        active_nav="chats",
-    )
+    return render_template("chats_list.html", user=user, rooms_sidebar=rooms_sidebar, active_nav="chats")
 
 
 @app.route("/chat/<int:room_id>", methods=["GET"])
@@ -881,10 +439,8 @@ def chat_room(room_id):
     if GroupBan.query.filter_by(room_id=room_id, user_id=user.id).first():
         flash("You are banned from this group.")
         return redirect(url_for("index"))
-
     membership = ChatMember.query.filter_by(room_id=room_id, user_id=user.id).first()
     if not membership:
-        flash("You are not a member of this chat.")
         return redirect(url_for("index"))
 
     search_q = request.args.get("search", "").strip()
@@ -892,54 +448,38 @@ def chat_room(room_id):
     rooms_sidebar, rooms_by_id, other_user_id_by_room, users_cache = get_user_rooms_sidebar(
         user.id, friend_users_by_id
     )
-
     active_room = rooms_by_id.get(room_id)
     if not active_room:
         return redirect(url_for("index"))
 
-    Message.query.filter(
-        Message.room_id == active_room.id,
-        Message.sender_id != user.id,
-        Message.is_read.is_(False),
-    ).update({"is_read": True}, synchronize_session=False)
-    db.session.commit()
-
-    active_room_title = ""
+    active_room_title = active_room.name or ""
     active_room_other_user = None
-    if active_room.is_group:
-        active_room_title = active_room.name or ""
-    else:
+    if not active_room.is_group:
         other_id = other_user_id_by_room.get(active_room.id)
         other = users_cache.get(other_id) if other_id else None
         active_room_other_user = other
         active_room_title = other.username if other else ""
 
     room_members_rows = ChatMember.query.filter_by(room_id=active_room.id).all()
-    member_user_ids = [m.user_id for m in room_members_rows]
     banned_rows = GroupBan.query.filter_by(room_id=active_room.id).all()
-    banned_user_ids = [b.user_id for b in banned_rows]
-    all_needed_uids = set(member_user_ids + banned_user_ids)
-    for uid in all_needed_uids:
+    for uid in {m.user_id for m in room_members_rows} | {b.user_id for b in banned_rows}:
         if uid not in users_cache:
             u = db.session.get(User, uid)
             if u:
                 users_cache[uid] = u
 
     now = datetime.utcnow()
-    members_view = []
-    for m in room_members_rows:
-        u = users_cache.get(m.user_id)
-        if not u:
-            continue
-        is_timed_out = bool(m.timeout_until and m.timeout_until > now)
-        members_view.append({
-            "user": u,
-            "is_admin": u.id == active_room.created_by,
-            "is_timed_out": is_timed_out,
-            "timeout_until_iso": iso_utc(m.timeout_until) if is_timed_out else "",
-        })
-
-    banned_users_view = [users_cache[uid] for uid in banned_user_ids if uid in users_cache]
+    members_view = [
+        {
+            "user": users_cache[m.user_id],
+            "is_admin": m.user_id == active_room.created_by,
+            "is_timed_out": bool(m.timeout_until and m.timeout_until > now),
+            "timeout_until_iso": iso_utc(m.timeout_until) if (m.timeout_until and m.timeout_until > now) else "",
+        }
+        for m in room_members_rows
+        if m.user_id in users_cache
+    ]
+    banned_users_view = [users_cache[b.user_id] for b in banned_rows if b.user_id in users_cache]
     is_group_admin = bool(active_room.is_group and active_room.created_by == user.id)
     my_timed_out = bool(membership.timeout_until and membership.timeout_until > now)
 
@@ -948,40 +488,24 @@ def chat_room(room_id):
         q = q.filter(Message.body.ilike(f"%{search_q}%"))
     raw_msgs = q.order_by(Message.id.asc()).all()
 
-    sender_ids = {m.sender_id for m in raw_msgs if m.sender_id not in users_cache}
-    if sender_ids:
-        for s in User.query.filter(User.id.in_(sender_ids)).all():
-            users_cache[s.id] = s
-
     messages_view = []
     for msg in raw_msgs:
         muted_sender = msg.sender_id in muted_user_ids
         sender_obj = users_cache.get(msg.sender_id) or msg.sender
-        rep_sender = None
-        if msg.reply_to:
-            rep_sender = users_cache.get(msg.reply_to.sender_id) or msg.reply_to.sender
-        can_delete = (msg.sender_id == user.id) or is_group_admin
-        has_media = bool(msg.file_data or msg.file_filename)
-        orig_fn = None if (muted_sender or not has_media) else (msg.original_filename or msg.file_filename or "Attachment")
-        file_fn = None if (muted_sender or not has_media) else msg.file_filename
-        is_img = bool(
-            not muted_sender
-            and has_media
-            and (is_image_filename(orig_fn) or is_image_filename(file_fn) or (msg.file_mime or "").startswith("image/"))
-        )
+        rep_sender = (users_cache.get(msg.reply_to.sender_id) or msg.reply_to.sender) if msg.reply_to else None
         messages_view.append({
             "id": msg.id,
             "sender": sender_obj,
             "body": "[Muted]" if muted_sender else (msg.body or ""),
             "msg_type": msg.msg_type,
-            "file_filename": file_fn,
-            "original_filename": orig_fn,
-            "media_url": "" if (muted_sender or not has_media) else msg.media_url,
-            "is_image": is_img,
+            "file_filename": None,
+            "original_filename": None if muted_sender else msg.original_filename,
+            "media_url": "",
+            "is_image": False,
             "created_iso": iso_utc(msg.created_at),
             "muted": muted_sender,
             "is_read": bool(msg.is_read),
-            "can_delete": can_delete,
+            "can_delete": False,
             "reply_to": msg.reply_to,
             "reply_sender_name": rep_sender.username if rep_sender else "User",
         })
@@ -1011,12 +535,7 @@ def api_typing(room_id):
         return jsonify({"error": "Forbidden"}), 403
     if not ChatMember.query.filter_by(room_id=room_id, user_id=user.id).first():
         return jsonify({"error": "Forbidden"}), 403
-
-    room_map = TYPING_STATE.setdefault(room_id, {})
-    room_map[user.id] = {
-        "username": user.username,
-        "expires_at": time.time() + 4.0,
-    }
+    TYPING_STATE.setdefault(room_id, {})[user.id] = {"username": user.username, "expires_at": time.time() + 4.0}
     return jsonify({"ok": True})
 
 
@@ -1024,57 +543,19 @@ def api_typing(room_id):
 @login_required
 def api_messages(room_id):
     user = current_user()
-    if GroupBan.query.filter_by(room_id=room_id, user_id=user.id).first():
+    if GroupBan.query.filter_by(room_id=room_id, user_id=user.id).first() or not ChatMember.query.filter_by(
+        room_id=room_id, user_id=user.id
+    ).first():
         return jsonify({"error": "Forbidden"}), 403
-    if not ChatMember.query.filter_by(room_id=room_id, user_id=user.id).first():
-        return jsonify({"error": "Forbidden"}), 403
-
-    Message.query.filter(
-        Message.room_id == room_id,
-        Message.sender_id != user.id,
-        Message.is_read.is_(False),
-    ).update({"is_read": True}, synchronize_session=False)
-    db.session.commit()
 
     after_id = request.args.get("after_id", 0, type=int)
-    known_ids_raw = request.args.get("known_ids", "")
-    known_ids = [int(x) for x in known_ids_raw.split(",") if x.isdigit()]
-
-    deleted_ids = []
-    if known_ids:
-        existing_ids = {
-            row[0]
-            for row in db.session.query(Message.id)
-            .filter(Message.room_id == room_id, Message.id.in_(known_ids))
-            .all()
-        }
-        deleted_ids = [mid for mid in known_ids if mid not in existing_ids]
-
-    new_msgs = (
-        Message.query.filter(Message.room_id == room_id, Message.id > after_id)
-        .order_by(Message.id.asc())
-        .all()
-    )
-
-    recent_sent = (
-        Message.query.filter(Message.room_id == room_id, Message.sender_id == user.id)
-        .order_by(Message.id.desc())
-        .limit(30)
-        .all()
-    )
-    read_statuses = {m.id: ("Seen" if m.is_read else "Delivered") for m in recent_sent}
-
-    muted_user_ids = {
-        r.friend_id
-        for r in Friendship.query.filter_by(user_id=user.id, muted=True).all()
-    }
-
+    new_msgs = Message.query.filter(Message.room_id == room_id, Message.id > after_id).order_by(Message.id.asc()).all()
+    muted_user_ids = {r.friend_id for r in Friendship.query.filter_by(user_id=user.id, muted=True).all()}
     sender_ids = {m.sender_id for m in new_msgs}
     users_cache = {u.id: u for u in User.query.filter(User.id.in_(sender_ids)).all()} if sender_ids else {}
 
     other_online = None
     room = db.session.get(ChatRoom, room_id)
-    is_group_admin = bool(room and room.is_group and room.created_by == user.id)
     if room and not room.is_group:
         other_m = ChatMember.query.filter(ChatMember.room_id == room_id, ChatMember.user_id != user.id).first()
         if other_m:
@@ -1082,18 +563,12 @@ def api_messages(room_id):
             if other_u:
                 other_online = bool(other_u.is_online)
 
-    typing_users = get_active_typing_users(room_id, user.id, muted_user_ids)
-
-    payload = [
-        serialize_message(m, user.id, muted_user_ids, users_cache, is_group_admin=is_group_admin)
-        for m in new_msgs
-    ]
     return jsonify({
-        "messages": payload,
-        "read_statuses": read_statuses,
+        "messages": [serialize_message(m, user.id, muted_user_ids, users_cache) for m in new_msgs],
+        "read_statuses": {},
         "other_online": other_online,
-        "deleted_ids": deleted_ids,
-        "typing_users": typing_users,
+        "deleted_ids": [],
+        "typing_users": get_active_typing_users(room_id, user.id, muted_user_ids),
     })
 
 
@@ -1101,191 +576,32 @@ def api_messages(room_id):
 @login_required
 def send_message(room_id):
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
-    user = current_user()
-
-    if GroupBan.query.filter_by(room_id=room_id, user_id=user.id).first():
-        if is_ajax:
-            return jsonify({"error": "Banned from group."}), 403
-        flash("You are banned from this group.")
-        return redirect(url_for("index"))
-
-    membership = ChatMember.query.filter_by(room_id=room_id, user_id=user.id).first()
-    if not membership:
-        if is_ajax:
-            return jsonify({"error": "Forbidden"}), 403
-        return redirect(url_for("index"))
-
-    if membership.timeout_until and membership.timeout_until > datetime.utcnow():
-        if is_ajax:
-            return jsonify({"error": "You are timed out in this group."}), 403
-        flash("You are currently timed out in this group.")
-        return redirect(url_for("chat_room", room_id=room_id))
-
-    room = db.session.get(ChatRoom, room_id)
-    if room and not room.is_group:
-        other_m = ChatMember.query.filter(
-            ChatMember.room_id == room.id, ChatMember.user_id != user.id
-        ).first()
-        if other_m and is_blocked_between(user.id, other_m.user_id):
-            if is_ajax:
-                return jsonify({"error": "Messaging is blocked between you and this user."}), 403
-            flash("Messaging is blocked between you and this user.")
-            return redirect(url_for("chat_room", room_id=room_id))
-
-    body = request.form.get("body", "").strip()
-    reply_to_id = request.form.get("reply_to_id", type=int)
-    if reply_to_id:
-        rep_msg = db.session.get(Message, reply_to_id)
-        if not rep_msg or rep_msg.room_id != room_id:
-            reply_to_id = None
-
-    msg_type = "text"
-    stored_file = None
-    orig_file = None
-    media_data_url = None
-    media_mime = None
-
-    voice_file = request.files.get("voice_data")
-    attachment = request.files.get("attachment")
-
-    if voice_file and voice_file.filename:
-        stored_file, orig_file, media_data_url, media_mime = save_uploaded_media(voice_file, prefix="voice")
-        msg_type = "voice"
-    elif attachment and attachment.filename:
-        stored_file, orig_file, media_data_url, media_mime = save_uploaded_media(attachment, prefix="media")
-        msg_type = "file"
-
-    if not body and not stored_file and not media_data_url:
-        if is_ajax:
-            return jsonify({"error": "Empty message"}), 400
-        return redirect(url_for("chat_room", room_id=room_id))
-
-    msg = Message(
-        room_id=room_id,
-        sender_id=user.id,
-        body=body or None,
-        msg_type=msg_type,
-        file_filename=stored_file,
-        original_filename=orig_file,
-        file_data=media_data_url,
-        file_mime=media_mime,
-        reply_to_id=reply_to_id,
-        is_read=False,
-    )
-    db.session.add(msg)
-    db.session.commit()
-
-    room_map = TYPING_STATE.get(room_id)
-    if room_map and user.id in room_map:
-        del room_map[user.id]
-
-    is_group_admin = bool(room and room.is_group and room.created_by == user.id)
+    # Validate upload size up to 100 MB, then discard without storing anywhere
+    for field_name in ("voice_data", "attachment"):
+        f = request.files.get(field_name)
+        if f and f.filename:
+            raw = f.read()
+            if len(raw) > MAX_UPLOAD_BYTES:
+                return (jsonify({"error": "File exceeds 100 MB limit."}), 413) if is_ajax else redirect(
+                    url_for("chat_room", room_id=room_id)
+                )
+    msg_err = "Read-only mode: messages and files are not stored."
     if is_ajax:
-        return jsonify({
-            "ok": True,
-            "message": serialize_message(
-                msg, user.id, set(), {user.id: user}, is_group_admin=is_group_admin
-            ),
-        })
-
+        return jsonify({"error": msg_err}), 403
+    flash(msg_err)
     return redirect(url_for("chat_room", room_id=room_id))
 
 
 @app.route("/messages/delete/<int:message_id>", methods=["POST"])
-@login_required
-def delete_message(message_id):
-    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
-    user = current_user()
-    msg = db.session.get(Message, message_id)
-    if not msg:
-        if is_ajax:
-            return jsonify({"ok": True, "deleted_id": message_id})
-        return redirect(url_for("index"))
-
-    room = db.session.get(ChatRoom, msg.room_id)
-    is_admin = bool(room and room.is_group and room.created_by == user.id)
-    if msg.sender_id != user.id and not is_admin:
-        if is_ajax:
-            return jsonify({"error": "Forbidden"}), 403
-        flash("You can only delete your own messages.")
-        return redirect(url_for("chat_room", room_id=msg.room_id))
-
-    room_id = msg.room_id
-    Message.query.filter_by(reply_to_id=msg.id).update({"reply_to_id": None})
-    db.session.delete(msg)
-    db.session.commit()
-
-    if is_ajax:
-        return jsonify({"ok": True, "deleted_id": message_id})
-
-    return redirect(url_for("chat_room", room_id=room_id))
-
-
 @app.route("/messages/forward/<int:message_id>", methods=["POST"])
 @login_required
-def forward_message(message_id):
-    user = current_user()
-    orig = db.session.get(Message, message_id)
-    target_room_id = request.form.get("target_room_id", type=int)
-
-    if not orig or not target_room_id:
-        flash("Select a target chat to forward to.")
-        return redirect(url_for("index"))
-
-    if not ChatMember.query.filter_by(room_id=orig.room_id, user_id=user.id).first():
-        return redirect(url_for("index"))
-
-    if GroupBan.query.filter_by(room_id=target_room_id, user_id=user.id).first():
-        flash("You are banned from that group.")
-        return redirect(url_for("chat_room", room_id=orig.room_id))
-
-    target_mem = ChatMember.query.filter_by(room_id=target_room_id, user_id=user.id).first()
-    if not target_mem:
-        flash("You are not a member of that chat.")
-        return redirect(url_for("chat_room", room_id=orig.room_id))
-
-    if target_mem.timeout_until and target_mem.timeout_until > datetime.utcnow():
-        flash("You are timed out in that group.")
-        return redirect(url_for("chat_room", room_id=orig.room_id))
-
-    forwarded_text = orig.body or ""
-    if orig.original_filename and orig.msg_type == "file":
-        forwarded_text = (forwarded_text + " " + orig.original_filename).strip()
-
-    fwd_msg = Message(
-        room_id=target_room_id,
-        sender_id=user.id,
-        body=forwarded_text or "Forwarded message",
-        msg_type="text",
-        is_read=False,
-    )
-    db.session.add(fwd_msg)
-    db.session.commit()
-    flash("Message forwarded.")
-    return redirect(url_for("chat_room", room_id=target_room_id))
-
-
-@app.route("/uploads/<filename>")
-@login_required
-def uploaded_file(filename):
-    safe = secure_filename(filename)
-    download = request.args.get("download") == "1"
-    disk_path = os.path.join(UPLOAD_DIR, safe)
-    if os.path.exists(disk_path):
-        return send_from_directory(UPLOAD_DIR, safe, as_attachment=download)
-
-    msg = Message.query.filter_by(file_filename=safe).first()
-    if msg and msg.file_data and "," in msg.file_data:
-        _, b64_part = msg.file_data.split(",", 1)
-        raw = base64.b64decode(b64_part)
-        mime = msg.file_mime or "application/octet-stream"
-        headers = {}
-        if download:
-            dl_name = secure_filename(msg.original_filename or safe)
-            headers["Content-Disposition"] = f'attachment; filename="{dl_name}"'
-        return Response(raw, mimetype=mime, headers=headers)
-
-    return Response("Not found", status=404)
+def message_readonly_action(message_id):
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+    msg_err = "Read-only mode: messages cannot be modified."
+    if is_ajax:
+        return jsonify({"error": msg_err}), 403
+    flash(msg_err)
+    return redirect(url_for("index"))
 
 
 if __name__ == "__main__":
