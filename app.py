@@ -2,11 +2,13 @@ import base64
 import os
 import random
 import secrets
+import time
 from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import (
     Flask,
+    Response,
     flash,
     g,
     jsonify,
@@ -42,6 +44,9 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024 * 1024
 
 db = SQLAlchemy(app)
+
+# In-memory typing tracker: {room_id: {user_id: {"username": str, "expires_at": float}}}
+TYPING_STATE = {}
 
 
 # --- Models ---
@@ -113,12 +118,22 @@ class Message(db.Model):
     msg_type = db.Column(db.String(20), default="text", nullable=False)
     file_filename = db.Column(db.String(255), nullable=True)
     original_filename = db.Column(db.String(255), nullable=True)
+    file_data = db.Column(db.Text, nullable=True)
+    file_mime = db.Column(db.String(120), nullable=True)
     reply_to_id = db.Column(db.Integer, db.ForeignKey("message.id"), nullable=True)
     is_read = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     sender = db.relationship("User", foreign_keys=[sender_id])
     reply_to = db.relationship("Message", remote_side=[id])
+
+    @property
+    def media_url(self):
+        if self.file_data:
+            return self.file_data
+        if self.file_filename:
+            return f"/uploads/{self.file_filename}"
+        return ""
 
 
 def ensure_schema_columns():
@@ -149,6 +164,12 @@ def ensure_schema_columns():
         if "is_read" not in cols:
             with db.engine.begin() as conn:
                 conn.execute(text('ALTER TABLE "message" ADD COLUMN is_read BOOLEAN DEFAULT FALSE'))
+        if "file_data" not in cols:
+            with db.engine.begin() as conn:
+                conn.execute(text('ALTER TABLE "message" ADD COLUMN file_data TEXT'))
+        if "file_mime" not in cols:
+            with db.engine.begin() as conn:
+                conn.execute(text('ALTER TABLE "message" ADD COLUMN file_mime VARCHAR(120)'))
 
 
 with app.app_context():
@@ -202,20 +223,31 @@ def encode_pfp_data_url(file_storage):
     return f"data:{mime};base64,{b64}"
 
 
-def save_uploaded_stream(file_storage, prefix="file"):
-    ext = os.path.splitext(secure_filename(file_storage.filename or ""))[1]
+def save_uploaded_media(file_storage, prefix="file", max_db_bytes=5 * 1024 * 1024):
+    orig_name = file_storage.filename or f"{prefix}_upload"
+    ext = os.path.splitext(secure_filename(orig_name))[1]
     stored_name = f"{prefix}_{secrets.token_hex(12)}{ext}"
+    mime = file_storage.mimetype or "application/octet-stream"
+
+    raw_bytes = file_storage.read()
+    data_url = None
+    if raw_bytes and len(raw_bytes) <= max_db_bytes:
+        b64 = base64.b64encode(raw_bytes).decode("utf-8")
+        data_url = f"data:{mime};base64,{b64}"
+
     dest_path = os.path.join(UPLOAD_DIR, stored_name)
-
-    chunk_size = 1024 * 1024 * 4
     with open(dest_path, "wb") as out_f:
-        while True:
-            chunk = file_storage.stream.read(chunk_size)
-            if not chunk:
-                break
-            out_f.write(chunk)
+        if raw_bytes:
+            out_f.write(raw_bytes)
+        else:
+            chunk_size = 1024 * 1024 * 4
+            while True:
+                chunk = file_storage.stream.read(chunk_size)
+                if not chunk:
+                    break
+                out_f.write(chunk)
 
-    return stored_name, file_storage.filename or stored_name
+    return stored_name, orig_name, data_url, mime
 
 
 def is_image_filename(filename):
@@ -233,6 +265,23 @@ def iso_utc(dt):
     if not dt:
         return ""
     return dt.replace(microsecond=0).isoformat() + "Z"
+
+
+def get_active_typing_users(room_id, viewer_id, muted_user_ids):
+    now_ts = time.time()
+    room_map = TYPING_STATE.get(room_id)
+    if not room_map:
+        return []
+
+    expired = [uid for uid, info in room_map.items() if info.get("expires_at", 0) <= now_ts]
+    for uid in expired:
+        del room_map[uid]
+
+    names = []
+    for uid, info in room_map.items():
+        if uid != viewer_id and uid not in muted_user_ids and info.get("username"):
+            names.append(info["username"])
+    return names
 
 
 def get_friends_data(user_id):
@@ -333,7 +382,7 @@ def get_shared_media_for_pair(viewer_id, target_id):
     media_msgs = (
         Message.query.filter(
             Message.room_id.in_(shared_room_ids),
-            Message.file_filename.isnot(None),
+            db.or_(Message.file_filename.isnot(None), Message.file_data.isnot(None)),
         )
         .order_by(Message.id.desc())
         .limit(12)
@@ -342,14 +391,14 @@ def get_shared_media_for_pair(viewer_id, target_id):
 
     items = []
     for m in media_msgs:
-        label = m.original_filename or m.file_filename
+        label = m.original_filename or m.file_filename or "Attachment"
         items.append({
             "id": m.id,
-            "filename": m.file_filename,
+            "filename": m.file_filename or label,
             "label": label,
-            "is_image": is_image_filename(label),
-            "url": url_for("uploaded_file", filename=m.file_filename),
-            "download_url": url_for("uploaded_file", filename=m.file_filename, download=1),
+            "is_image": is_image_filename(label) or bool((m.file_mime or "").startswith("image/")),
+            "url": m.media_url,
+            "download_url": url_for("uploaded_file", filename=m.file_filename, download=1) if m.file_filename else m.media_url,
         })
     return items
 
@@ -358,8 +407,15 @@ def serialize_message(msg, user_id, muted_user_ids, users_cache, is_group_admin=
     muted_sender = msg.sender_id in muted_user_ids
     sender = users_cache.get(msg.sender_id) or msg.sender
     sender_name = sender.username if sender else ""
-    file_fn = None if muted_sender else (msg.file_filename or "")
-    orig_fn = None if muted_sender else (msg.original_filename or "")
+    has_media = bool(msg.file_data or msg.file_filename)
+    file_fn = None if (muted_sender or not has_media) else (msg.file_filename or "")
+    orig_fn = None if (muted_sender or not has_media) else (msg.original_filename or file_fn or "Attachment")
+    media_url = "" if (muted_sender or not has_media) else msg.media_url
+    is_img = bool(
+        not muted_sender
+        and has_media
+        and (is_image_filename(orig_fn) or is_image_filename(file_fn) or (msg.file_mime or "").startswith("image/"))
+    )
 
     reply_info = None
     if msg.reply_to and not muted_sender:
@@ -382,9 +438,9 @@ def serialize_message(msg, user_id, muted_user_ids, users_cache, is_group_admin=
         "msg_type": msg.msg_type or "text",
         "file_filename": file_fn,
         "original_filename": orig_fn,
-        "is_image": bool(file_fn and is_image_filename(orig_fn or file_fn)),
-        "file_url": f"/uploads/{file_fn}" if file_fn else "",
-        "download_url": f"/uploads/{file_fn}?download=1" if file_fn else "",
+        "is_image": is_img,
+        "file_url": media_url,
+        "download_url": f"/uploads/{file_fn}?download=1" if file_fn else media_url,
         "is_read": bool(msg.is_read),
         "can_delete": bool((msg.sender_id == user_id) or is_group_admin),
         "status_label": ("Seen" if msg.is_read else "Delivered") if msg.sender_id == user_id else "",
@@ -905,14 +961,23 @@ def chat_room(room_id):
         if msg.reply_to:
             rep_sender = users_cache.get(msg.reply_to.sender_id) or msg.reply_to.sender
         can_delete = (msg.sender_id == user.id) or is_group_admin
+        has_media = bool(msg.file_data or msg.file_filename)
+        orig_fn = None if (muted_sender or not has_media) else (msg.original_filename or msg.file_filename or "Attachment")
+        file_fn = None if (muted_sender or not has_media) else msg.file_filename
+        is_img = bool(
+            not muted_sender
+            and has_media
+            and (is_image_filename(orig_fn) or is_image_filename(file_fn) or (msg.file_mime or "").startswith("image/"))
+        )
         messages_view.append({
             "id": msg.id,
             "sender": sender_obj,
             "body": "[Muted]" if muted_sender else (msg.body or ""),
             "msg_type": msg.msg_type,
-            "file_filename": None if muted_sender else msg.file_filename,
-            "original_filename": None if muted_sender else msg.original_filename,
-            "is_image": bool(not muted_sender and msg.file_filename and is_image_filename(msg.original_filename or msg.file_filename)),
+            "file_filename": file_fn,
+            "original_filename": orig_fn,
+            "media_url": "" if (muted_sender or not has_media) else msg.media_url,
+            "is_image": is_img,
             "created_iso": iso_utc(msg.created_at),
             "muted": muted_sender,
             "is_read": bool(msg.is_read),
@@ -936,6 +1001,23 @@ def chat_room(room_id):
         search_q=search_q,
         active_nav="chats",
     )
+
+
+@app.route("/api/typing/<int:room_id>", methods=["POST"])
+@login_required
+def api_typing(room_id):
+    user = current_user()
+    if GroupBan.query.filter_by(room_id=room_id, user_id=user.id).first():
+        return jsonify({"error": "Forbidden"}), 403
+    if not ChatMember.query.filter_by(room_id=room_id, user_id=user.id).first():
+        return jsonify({"error": "Forbidden"}), 403
+
+    room_map = TYPING_STATE.setdefault(room_id, {})
+    room_map[user.id] = {
+        "username": user.username,
+        "expires_at": time.time() + 4.0,
+    }
+    return jsonify({"ok": True})
 
 
 @app.route("/api/messages/<int:room_id>")
@@ -1000,6 +1082,8 @@ def api_messages(room_id):
             if other_u:
                 other_online = bool(other_u.is_online)
 
+    typing_users = get_active_typing_users(room_id, user.id, muted_user_ids)
+
     payload = [
         serialize_message(m, user.id, muted_user_ids, users_cache, is_group_admin=is_group_admin)
         for m in new_msgs
@@ -1009,6 +1093,7 @@ def api_messages(room_id):
         "read_statuses": read_statuses,
         "other_online": other_online,
         "deleted_ids": deleted_ids,
+        "typing_users": typing_users,
     })
 
 
@@ -1057,18 +1142,20 @@ def send_message(room_id):
     msg_type = "text"
     stored_file = None
     orig_file = None
+    media_data_url = None
+    media_mime = None
 
     voice_file = request.files.get("voice_data")
     attachment = request.files.get("attachment")
 
     if voice_file and voice_file.filename:
-        stored_file, orig_file = save_uploaded_stream(voice_file, prefix="voice")
+        stored_file, orig_file, media_data_url, media_mime = save_uploaded_media(voice_file, prefix="voice")
         msg_type = "voice"
     elif attachment and attachment.filename:
-        stored_file, orig_file = save_uploaded_stream(attachment, prefix="media")
+        stored_file, orig_file, media_data_url, media_mime = save_uploaded_media(attachment, prefix="media")
         msg_type = "file"
 
-    if not body and not stored_file:
+    if not body and not stored_file and not media_data_url:
         if is_ajax:
             return jsonify({"error": "Empty message"}), 400
         return redirect(url_for("chat_room", room_id=room_id))
@@ -1080,11 +1167,17 @@ def send_message(room_id):
         msg_type=msg_type,
         file_filename=stored_file,
         original_filename=orig_file,
+        file_data=media_data_url,
+        file_mime=media_mime,
         reply_to_id=reply_to_id,
         is_read=False,
     )
     db.session.add(msg)
     db.session.commit()
+
+    room_map = TYPING_STATE.get(room_id)
+    if room_map and user.id in room_map:
+        del room_map[user.id]
 
     is_group_admin = bool(room and room.is_group and room.created_by == user.id)
     if is_ajax:
@@ -1177,7 +1270,22 @@ def forward_message(message_id):
 def uploaded_file(filename):
     safe = secure_filename(filename)
     download = request.args.get("download") == "1"
-    return send_from_directory(UPLOAD_DIR, safe, as_attachment=download)
+    disk_path = os.path.join(UPLOAD_DIR, safe)
+    if os.path.exists(disk_path):
+        return send_from_directory(UPLOAD_DIR, safe, as_attachment=download)
+
+    msg = Message.query.filter_by(file_filename=safe).first()
+    if msg and msg.file_data and "," in msg.file_data:
+        _, b64_part = msg.file_data.split(",", 1)
+        raw = base64.b64decode(b64_part)
+        mime = msg.file_mime or "application/octet-stream"
+        headers = {}
+        if download:
+            dl_name = secure_filename(msg.original_filename or safe)
+            headers["Content-Disposition"] = f'attachment; filename="{dl_name}"'
+        return Response(raw, mimetype=mime, headers=headers)
+
+    return Response("Not found", status=404)
 
 
 if __name__ == "__main__":

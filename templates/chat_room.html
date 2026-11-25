@@ -7,7 +7,7 @@
     background-color: #ffffff;
     border-top-left-radius: 0;
     border-top-right-radius: 0;
-    padding-bottom: 162px;
+    padding-bottom: 176px;
     overflow: visible;
   }
 
@@ -179,6 +179,15 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+
+  .typing-indicator-bar {
+    min-height: 18px;
+    padding: 0 14px 6px;
+    font-size: 12px;
+    font-style: italic;
+    color: #1f8a7d;
+    font-weight: 600;
   }
 
   .msg-row {
@@ -622,24 +631,24 @@
           <div class="msg-bubble">{{ m.body }}</div>
         {% endif %}
 
-        {% if m.msg_type == "voice" and m.file_filename %}
+        {% if m.msg_type == "voice" and m.media_url %}
           <div class="voice-wave-box">
             <span>🎤</span>
-            <audio controls preload="metadata" src="/uploads/{{ m.file_filename }}" style="max-width: 190px; height: 30px;"></audio>
+            <audio controls preload="metadata" src="{{ m.media_url }}" style="max-width: 190px; height: 30px;"></audio>
           </div>
-        {% elif m.msg_type == "file" and m.file_filename %}
+        {% elif m.msg_type == "file" and m.media_url %}
           {% if m.is_image %}
             <div class="img-preview-card">
-              <img src="/uploads/{{ m.file_filename }}" alt="{{ m.original_filename }}" onclick="openImagePreview('/uploads/{{ m.file_filename }}', '{{ m.original_filename }}')" />
+              <img src="{{ m.media_url }}" alt="{{ m.original_filename }}" onclick="openImagePreview(this.src, '{{ m.original_filename }}')" />
               <div class="img-preview-footer">
                 <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.original_filename }}</span>
-                <a href="/uploads/{{ m.file_filename }}?download=1" style="color: #1f8a7d; font-weight: 700;">Save</a>
+                <a href="{{ m.media_url if m.media_url.startswith('data:') else (m.media_url ~ '?download=1') }}" download="{{ m.original_filename }}" style="color: #1f8a7d; font-weight: 700;">Save</a>
               </div>
             </div>
           {% else %}
             <div class="file-chip">
               <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">🔒 {{ m.original_filename }}</span>
-              <a href="/uploads/{{ m.file_filename }}?download=1" class="send-pill-btn" style="text-decoration: none;">Save</a>
+              <a href="{{ m.media_url if m.media_url.startswith('data:') else (m.media_url ~ '?download=1') }}" download="{{ m.original_filename }}" class="send-pill-btn" style="text-decoration: none;">Save</a>
             </div>
           {% endif %}
         {% endif %}
@@ -662,6 +671,8 @@
       <div style="font-size: 13px; color: #9ca3af; text-align: center; margin-top: 24px;">No messages yet.</div>
     {% endfor %}
   </div>
+
+  <div id="typing-indicator" class="typing-indicator-bar"></div>
 
   <form
     id="message-form"
@@ -695,7 +706,7 @@
         <input type="file" name="voice_data" id="voice-file-input" accept="audio/*" style="display: none;" />
 
         <div class="msg-pill-wrap">
-          <input type="text" name="body" id="msg-body" class="msg-pill-input" placeholder="Write your message" />
+          <input type="text" name="body" id="msg-body" class="msg-pill-input" placeholder="Write your message" autocomplete="off" />
           <button type="submit" id="send-msg-btn" class="send-pill-btn">Send</button>
         </div>
 
@@ -828,6 +839,7 @@
 {% block extra_js %}
 <script>
   const msgList = document.getElementById("messages-list");
+  const typingIndicator = document.getElementById("typing-indicator");
 
   function formatLocalTime(isoStr) {
     if (!isoStr) return "";
@@ -887,6 +899,7 @@
       if (!msgBodyInput) return;
       msgBodyInput.value += btn.dataset.emoji || "";
       msgBodyInput.focus();
+      notifyTyping();
     });
   });
 
@@ -988,6 +1001,43 @@
   const activeRoomId = (messageForm && messageForm.dataset.roomId) || "";
   const CURRENT_USER_ID = Number((messageForm && messageForm.dataset.userId) || 0);
 
+  let lastTypingSent = 0;
+  async function notifyTyping() {
+    if (!activeRoomId) return;
+    const now = Date.now();
+    if (now - lastTypingSent < 2000) return;
+    lastTypingSent = now;
+    try {
+      await fetch("/api/typing/" + activeRoomId, {
+        method: "POST",
+        headers: { "X-Requested-With": "XMLHttpRequest" }
+      });
+    } catch (err) {
+      // Ignore transient network errors
+    }
+  }
+
+  if (msgBodyInput) {
+    msgBodyInput.addEventListener("input", () => {
+      if (msgBodyInput.value.trim().length > 0) {
+        notifyTyping();
+      }
+    });
+  }
+
+  function renderTypingUsers(usersList) {
+    if (!typingIndicator) return;
+    if (!Array.isArray(usersList) || usersList.length === 0) {
+      typingIndicator.textContent = "";
+      return;
+    }
+    if (usersList.length === 1) {
+      typingIndicator.textContent = usersList[0] + " is typing...";
+    } else {
+      typingIndicator.textContent = usersList.join(", ") + " are typing...";
+    }
+  }
+
   let lastMessageId = 0;
   if (msgList) {
     msgList.querySelectorAll(".msg-row[data-msg-id]").forEach((el) => {
@@ -1078,7 +1128,8 @@
         const span = document.createElement("span");
         span.textContent = msg.original_filename || "Image";
         const dl = document.createElement("a");
-        dl.href = msg.download_url || (msg.file_url + "?download=1");
+        dl.href = msg.download_url || msg.file_url;
+        dl.download = msg.original_filename || "image";
         dl.textContent = "Save";
         dl.style.color = "#1f8a7d";
         dl.style.fontWeight = "700";
@@ -1092,7 +1143,8 @@
         const span = document.createElement("span");
         span.textContent = "🔒 " + (msg.original_filename || "File");
         const link = document.createElement("a");
-        link.href = msg.download_url || (msg.file_url + "?download=1");
+        link.href = msg.download_url || msg.file_url;
+        link.download = msg.original_filename || "file";
         link.className = "send-pill-btn";
         link.style.textDecoration = "none";
         link.textContent = "Save";
@@ -1180,6 +1232,10 @@
       if (!res.ok) return;
       const data = await res.json();
 
+      if (data && Array.isArray(data.typing_users)) {
+        renderTypingUsers(data.typing_users);
+      }
+
       if (data && Array.isArray(data.deleted_ids) && msgList) {
         data.deleted_ids.forEach((did) => {
           const row = msgList.querySelector('.msg-row[data-msg-id="' + did + '"]');
@@ -1257,6 +1313,7 @@
           if (recStatus) recStatus.textContent = "";
           if (replyToIdInput) replyToIdInput.value = "";
           if (replyBanner) replyBanner.classList.remove("active");
+          renderTypingUsers([]);
         } else {
           messageForm.submit();
         }
@@ -1301,7 +1358,7 @@
   }
 
   if (activeRoomId) {
-    setInterval(pollNewMessages, 3000);
+    setInterval(pollNewMessages, 2500);
   }
 </script>
 {% endblock %}
