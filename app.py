@@ -389,7 +389,7 @@ def add_friend():
 
 @app.route("/friends/action", methods=["POST"])
 @login_required
-def friends_readonly_action():
+def friend_action():
     flash("Read-only mode: friend list changes are not saved.")
     return redirect(url_for("friends_page"))
 
