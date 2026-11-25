@@ -130,10 +130,10 @@ def ensure_schema_columns():
         cols = {c["name"] for c in inspector.get_columns("user")}
         if "pfp_data" not in cols:
             with db.engine.begin() as conn:
-                conn.execute(text("ALTER TABLE user ADD COLUMN pfp_data TEXT"))
+                conn.execute(text('ALTER TABLE "user" ADD COLUMN pfp_data TEXT'))
         if "last_seen" not in cols:
             with db.engine.begin() as conn:
-                conn.execute(text("ALTER TABLE user ADD COLUMN last_seen TIMESTAMP"))
+                conn.execute(text('ALTER TABLE "user" ADD COLUMN last_seen TIMESTAMP'))
 
     if "chat_member" in tables:
         cols = {c["name"] for c in inspector.get_columns("chat_member")}
@@ -145,10 +145,10 @@ def ensure_schema_columns():
         cols = {c["name"] for c in inspector.get_columns("message")}
         if "reply_to_id" not in cols:
             with db.engine.begin() as conn:
-                conn.execute(text("ALTER TABLE message ADD COLUMN reply_to_id INTEGER"))
+                conn.execute(text('ALTER TABLE "message" ADD COLUMN reply_to_id INTEGER'))
         if "is_read" not in cols:
             with db.engine.begin() as conn:
-                conn.execute(text("ALTER TABLE message ADD COLUMN is_read BOOLEAN DEFAULT FALSE"))
+                conn.execute(text('ALTER TABLE "message" ADD COLUMN is_read BOOLEAN DEFAULT FALSE'))
 
 
 with app.app_context():
@@ -787,7 +787,6 @@ def chat_room(room_id):
     if not active_room:
         return redirect(url_for("index"))
 
-    # Mark incoming messages in this room as read
     Message.query.filter(
         Message.room_id == active_room.id,
         Message.sender_id != user.id,
@@ -805,7 +804,6 @@ def chat_room(room_id):
         active_room_other_user = other
         active_room_title = other.username if other else ""
 
-    # Group members & moderation data
     room_members_rows = ChatMember.query.filter_by(room_id=active_room.id).all()
     member_user_ids = [m.user_id for m in room_members_rows]
     banned_rows = GroupBan.query.filter_by(room_id=active_room.id).all()
@@ -895,7 +893,6 @@ def api_messages(room_id):
     if not ChatMember.query.filter_by(room_id=room_id, user_id=user.id).first():
         return jsonify({"error": "Forbidden"}), 403
 
-    # Mark incoming messages as read
     Message.query.filter(
         Message.room_id == room_id,
         Message.sender_id != user.id,
@@ -910,7 +907,6 @@ def api_messages(room_id):
         .all()
     )
 
-    # Also return updated read status for recent messages sent by current user
     recent_sent = (
         Message.query.filter(Message.room_id == room_id, Message.sender_id == user.id)
         .order_by(Message.id.desc())
