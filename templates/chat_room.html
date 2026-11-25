@@ -7,7 +7,7 @@
     background-color: #ffffff;
     border-top-left-radius: 0;
     border-top-right-radius: 0;
-    padding-bottom: 136px;
+    padding-bottom: 162px;
   }
 
   .sheet-handle {
@@ -31,7 +31,7 @@
     border-bottom: 1px solid #eef2f1;
     position: sticky;
     top: 52px;
-    z-index: 25;
+    z-index: 30;
   }
 
   .room-header-left {
@@ -50,16 +50,12 @@
     text-decoration: none;
   }
 
-  .back-arrow:hover {
-    text-decoration: none;
-    color: #1f7a6d;
-  }
-
   .room-avatar-wrap {
     position: relative;
     width: 44px;
     height: 44px;
     flex-shrink: 0;
+    display: inline-block;
   }
 
   .room-avatar {
@@ -76,17 +72,25 @@
     font-size: 16px;
   }
 
-  .room-status-dot {
+  .status-dot {
     position: absolute;
-    right: 1px;
-    bottom: 1px;
-    width: 10px;
-    height: 10px;
+    right: 0;
+    bottom: 0;
+    width: 11px;
+    height: 11px;
     border-radius: 50%;
-    background-color: #22c55e;
     border: 2px solid #ffffff;
   }
 
+  .status-dot.online {
+    background-color: #22c55e;
+  }
+
+  .status-dot.offline {
+    background-color: #9ca3af;
+  }
+
+  .room-title-btn,
   .room-title-link {
     font-size: 16px;
     font-weight: 700;
@@ -95,6 +99,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     display: block;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
   }
 
   .room-subtitle {
@@ -134,7 +143,7 @@
   }
 
   .search-input {
-    width: 120px;
+    width: 115px;
     padding: 6px 10px;
     border-radius: 999px;
     border: 1px solid #d1d5db;
@@ -170,7 +179,7 @@
   .msg-row {
     display: flex;
     flex-direction: column;
-    max-width: 82%;
+    max-width: 84%;
   }
 
   .msg-row.incoming {
@@ -190,6 +199,14 @@
     margin-bottom: 4px;
   }
 
+  .avatar-link {
+    position: relative;
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
   .msg-mini-avatar {
     width: 34px;
     height: 34px;
@@ -202,7 +219,11 @@
     justify-content: center;
     font-size: 13px;
     font-weight: 700;
-    flex-shrink: 0;
+  }
+
+  .avatar-link .status-dot {
+    width: 9px;
+    height: 9px;
   }
 
   .msg-sender-name {
@@ -210,6 +231,24 @@
     font-weight: 700;
     color: #111827;
     text-decoration: none;
+  }
+
+  .reply-quote-box {
+    font-size: 11px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    margin-bottom: 4px;
+    border-left: 3px solid #1f8a7d;
+    background-color: #eef3f5;
+    color: #374151;
+  }
+
+  .msg-row.incoming .reply-quote-box,
+  .msg-row.incoming .msg-bubble,
+  .msg-row.incoming .voice-wave-box,
+  .msg-row.incoming .file-chip,
+  .msg-row.incoming .msg-meta-row {
+    margin-left: 42px;
   }
 
   .msg-bubble {
@@ -223,7 +262,6 @@
     background-color: #f2f5f7;
     color: #1f2937;
     border-radius: 4px 14px 14px 14px;
-    margin-left: 42px;
   }
 
   .msg-row.outgoing .msg-bubble {
@@ -232,16 +270,39 @@
     border-radius: 14px 4px 14px 14px;
   }
 
+  .img-preview-card {
+    margin-top: 4px;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+    background-color: #f9fafb;
+    max-width: 240px;
+  }
+
+  .img-preview-card img {
+    display: block;
+    width: 100%;
+    max-height: 220px;
+    object-fit: cover;
+    cursor: pointer;
+  }
+
+  .img-preview-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    font-size: 11px;
+    background-color: #ffffff;
+    gap: 8px;
+  }
+
   .voice-wave-box {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
+    gap: 8px;
+    padding: 9px 12px;
     border-radius: 14px 4px 14px 14px;
-    min-width: 210px;
-  }
-
-  .msg-row.outgoing .voice-wave-box {
     background-color: #1f8a7d;
     color: #ffffff;
   }
@@ -250,30 +311,10 @@
     background-color: #f2f5f7;
     color: #1f2937;
     border-radius: 4px 14px 14px 14px;
-    margin-left: 42px;
   }
-
-  .wave-bars {
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    height: 18px;
-    flex: 1;
-  }
-
-  .wave-bars span {
-    width: 2.5px;
-    border-radius: 999px;
-    background-color: currentColor;
-    opacity: 0.85;
-  }
-
-  .wave-bars span:nth-child(odd) { height: 7px; }
-  .wave-bars span:nth-child(even) { height: 14px; }
-  .wave-bars span:nth-child(3n) { height: 18px; }
 
   .file-chip {
-    margin-top: 6px;
+    margin-top: 4px;
     padding: 8px 11px;
     border-radius: 12px;
     background-color: #f2f5f7;
@@ -285,18 +326,65 @@
     gap: 8px;
   }
 
-  .msg-row.incoming .file-chip {
-    margin-left: 42px;
+  .msg-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    flex-wrap: wrap;
   }
 
   .msg-time {
     font-size: 11px;
     color: #9ca3af;
-    margin-top: 4px;
   }
 
-  .msg-row.incoming .msg-time {
-    margin-left: 42px;
+  .msg-status-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #1f8a7d;
+  }
+
+  .msg-actions-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .msg-act-btn {
+    background: none;
+    border: none;
+    color: #6b7280;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 1px 4px;
+  }
+
+  .msg-act-btn:hover {
+    color: #1f8a7d;
+    text-decoration: underline;
+  }
+
+  .msg-act-btn.delete-btn:hover {
+    color: #dc2626;
+  }
+
+  .reply-banner {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background-color: #eef6f4;
+    border-left: 3px solid #1f8a7d;
+    padding: 6px 10px;
+    border-radius: 8px;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+
+  .reply-banner.active {
+    display: flex;
   }
 
   .composer-dock {
@@ -311,9 +399,7 @@
   }
 
   @media (max-width: 430px) {
-    .composer-dock {
-      max-width: 100%;
-    }
+    .composer-dock { max-width: 100%; }
   }
 
   .emoji-strip {
@@ -387,14 +473,40 @@
     flex-shrink: 0;
   }
 
-  .file-picked-name {
-    font-size: 11px;
-    color: #1f8a7d;
-    font-weight: 600;
-    margin-top: 4px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .modal-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 60;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+
+  .modal-backdrop.open {
+    display: flex;
+  }
+
+  .modal-card {
+    background: #ffffff;
+    color: #111827;
+    border-radius: 16px;
+    width: 100%;
+    max-width: 390px;
+    max-height: 82vh;
+    overflow-y: auto;
+    padding: 16px;
+  }
+
+  .member-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid #eef2f1;
+    font-size: 13px;
   }
 </style>
 {% endblock %}
@@ -405,26 +517,30 @@
     <div class="room-header-left">
       <a href="{{ url_for('index') }}" class="back-arrow" aria-label="Back">←</a>
 
-      <div class="room-avatar-wrap">
-        {% if active_room_other_user and active_room_other_user.avatar_src %}
-          <img src="{{ active_room_other_user.avatar_src }}" alt="Avatar" class="room-avatar" />
-        {% else %}
-          <div class="room-avatar">{{ active_room_title[0]|upper if active_room_title else "#" }}</div>
-        {% endif %}
-        <span class="room-status-dot"></span>
-      </div>
-
-      <div style="min-width: 0;">
-        {% if active_room_other_user %}
+      {% if active_room_other_user %}
+        <a href="{{ url_for('profile', target_user_id=active_room_other_user.id) }}" class="room-avatar-wrap">
+          {% if active_room_other_user.avatar_src %}
+            <img src="{{ active_room_other_user.avatar_src }}" alt="Avatar" class="room-avatar" />
+          {% else %}
+            <div class="room-avatar">{{ active_room_title[0]|upper if active_room_title else "#" }}</div>
+          {% endif %}
+          <span class="status-dot {{ 'online' if active_room_other_user.is_online else 'offline' }}" id="header-status-dot"></span>
+        </a>
+        <div style="min-width: 0;">
           <a href="{{ url_for('profile', target_user_id=active_room_other_user.id) }}" class="room-title-link">
             {{ active_room_title }}
           </a>
           <div class="room-subtitle">#{{ active_room_other_user.friend_number }}</div>
-        {% else %}
-          <div class="room-title-link">{{ active_room_title }}</div>
-          <div class="room-subtitle">{{ "Group" if active_room.is_group else "Chat" }}</div>
-        {% endif %}
-      </div>
+        </div>
+      {% else %}
+        <div class="room-avatar-wrap">
+          <div class="room-avatar">{{ active_room_title[0]|upper if active_room_title else "#" }}</div>
+        </div>
+        <div style="min-width: 0;">
+          <button type="button" class="room-title-btn" id="open-group-modal-btn">{{ active_room_title }}</button>
+          <div class="room-subtitle">{{ members_view|length }} members · Tap name</div>
+        </div>
+      {% endif %}
     </div>
 
     <div class="search-expand-wrap">
@@ -451,16 +567,25 @@
       <div class="msg-row {{ 'outgoing' if is_mine else 'incoming' }}" data-msg-id="{{ m.id }}">
         {% if not is_mine %}
           <div class="incoming-top">
-            {% if m.sender and m.sender.avatar_src %}
-              <img src="{{ m.sender.avatar_src }}" alt="Avatar" class="msg-mini-avatar" />
-            {% else %}
-              <div class="msg-mini-avatar">{{ m.sender.username[0]|upper if m.sender else "?" }}</div>
-            {% endif %}
+            <a href="{{ url_for('profile', target_user_id=m.sender.id) if m.sender else url_for('profile') }}" class="avatar-link">
+              {% if m.sender and m.sender.avatar_src %}
+                <img src="{{ m.sender.avatar_src }}" alt="Avatar" class="msg-mini-avatar" />
+              {% else %}
+                <div class="msg-mini-avatar">{{ m.sender.username[0]|upper if m.sender else "?" }}</div>
+              {% endif %}
+              <span class="status-dot {{ 'online' if (m.sender and m.sender.is_online) else 'offline' }}"></span>
+            </a>
             {% if m.sender %}
               <a href="{{ url_for('profile', target_user_id=m.sender.id) }}" class="msg-sender-name">{{ m.sender.username }}</a>
             {% else %}
               <span class="msg-sender-name">User</span>
             {% endif %}
+          </div>
+        {% endif %}
+
+        {% if m.reply_to %}
+          <div class="reply-quote-box">
+            <strong>{{ m.reply_sender_name }}:</strong> {{ m.reply_to.body or m.reply_to.original_filename or "Attachment" }}
           </div>
         {% endif %}
 
@@ -471,19 +596,40 @@
         {% if m.msg_type == "voice" and m.file_filename %}
           <div class="voice-wave-box">
             <span>🎤</span>
-            <div class="wave-bars" aria-hidden="true">
-              <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
-            </div>
-            <audio controls preload="none" src="/uploads/{{ m.file_filename }}" style="max-width: 130px; height: 28px;"></audio>
+            <audio controls preload="metadata" src="/uploads/{{ m.file_filename }}" style="max-width: 190px; height: 30px;"></audio>
           </div>
         {% elif m.msg_type == "file" and m.file_filename %}
-          <div class="file-chip">
-            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">🔒 {{ m.original_filename }}</span>
-            <a href="/uploads/{{ m.file_filename }}?download=1" class="send-pill-btn" style="text-decoration: none;">Save</a>
-          </div>
+          {% if m.is_image %}
+            <div class="img-preview-card">
+              <img src="/uploads/{{ m.file_filename }}" alt="{{ m.original_filename }}" onclick="openImagePreview('/uploads/{{ m.file_filename }}', '{{ m.original_filename }}')" />
+              <div class="img-preview-footer">
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.original_filename }}</span>
+                <a href="/uploads/{{ m.file_filename }}?download=1" style="color: #1f8a7d; font-weight: 700;">Save</a>
+              </div>
+            </div>
+          {% else %}
+            <div class="file-chip">
+              <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">🔒 {{ m.original_filename }}</span>
+              <a href="/uploads/{{ m.file_filename }}?download=1" class="send-pill-btn" style="text-decoration: none;">Save</a>
+            </div>
+          {% endif %}
         {% endif %}
 
-        <div class="msg-time">{{ m.time_str }}</div>
+        <div class="msg-meta-row">
+          <span class="msg-time local-time" data-utc="{{ m.created_iso }}"></span>
+          {% if is_mine %}
+            <span class="msg-status-label" data-status-msg-id="{{ m.id }}">{{ "Seen" if m.is_read else "Delivered" }}</span>
+          {% endif %}
+          <div class="msg-actions-bar">
+            <button type="button" class="msg-act-btn reply-btn" data-reply-id="{{ m.id }}" data-reply-sender="{{ m.sender.username if m.sender else 'User' }}" data-reply-text="{{ m.body or m.original_filename or 'Attachment' }}">Reply</button>
+            <button type="button" class="msg-act-btn forward-btn" data-forward-id="{{ m.id }}">Forward</button>
+            {% if m.can_delete %}
+              <form method="POST" action="{{ url_for('delete_message', message_id=m.id) }}" style="display: inline;">
+                <button type="submit" class="msg-act-btn delete-btn">Delete</button>
+              </form>
+            {% endif %}
+          </div>
+        </div>
       </div>
     {% else %}
       <div style="font-size: 13px; color: #9ca3af; text-align: center; margin-top: 24px;">No messages yet.</div>
@@ -501,42 +647,171 @@
     data-username="{{ user.username }}"
     data-initial="{{ user.username[0]|upper }}"
   >
+    <div id="reply-banner" class="reply-banner">
+      <span id="reply-banner-text"></span>
+      <button type="button" id="cancel-reply-btn" class="msg-act-btn">✕</button>
+    </div>
+    <input type="hidden" name="reply_to_id" id="reply-to-id-input" value="" />
+
     <div class="emoji-strip">
       {% for emo in ["😀", "😂", "❤️", "🔥", "👍", "🙏", "🎉", "😢", "😮", "💯"] %}
         <button type="button" class="emoji-btn" data-emoji="{{ emo }}">{{ emo }}</button>
       {% endfor %}
     </div>
 
-    <div class="input-bar-row">
-      <button type="button" class="clip-btn" id="attach-trigger-btn" title="Attach file" aria-label="Attach file">📎</button>
-      <input type="file" name="attachment" id="attachment-input" style="display: none;" />
-      <input type="file" name="voice_data" id="voice-file-input" accept="audio/*" style="display: none;" />
+    {% if my_timed_out %}
+      <div style="font-size: 12px; color: #dc2626; font-weight: 700; padding: 6px 0;">You are currently timed out in this group.</div>
+    {% else %}
+      <div class="input-bar-row">
+        <button type="button" class="clip-btn" id="attach-trigger-btn" title="Attach file" aria-label="Attach file">📎</button>
+        <input type="file" name="attachment" id="attachment-input" style="display: none;" />
+        <input type="file" name="voice_data" id="voice-file-input" accept="audio/*" style="display: none;" />
 
-      <div class="msg-pill-wrap">
-        <input type="text" name="body" id="msg-body" class="msg-pill-input" placeholder="Write your message" />
-        <button type="submit" id="send-msg-btn" class="send-pill-btn">Send</button>
+        <div class="msg-pill-wrap">
+          <input type="text" name="body" id="msg-body" class="msg-pill-input" placeholder="Write your message" />
+          <button type="submit" id="send-msg-btn" class="send-pill-btn">Send</button>
+        </div>
+
+        <button type="button" class="icon-action-btn" id="record-btn" title="Voice message" aria-label="Voice message">🎤</button>
       </div>
+    {% endif %}
 
-      <button type="button" class="icon-action-btn" id="record-btn" title="Voice message" aria-label="Voice message">🎤</button>
-    </div>
-
-    <div id="file-picked-label" class="file-picked-name"></div>
-    <div id="rec-status" class="file-picked-name"></div>
+    <div id="file-picked-label" style="font-size: 11px; color: #1f8a7d; font-weight: 600; margin-top: 4px;"></div>
+    <div id="rec-status" style="font-size: 11px; color: #1f8a7d; font-weight: 600;"></div>
   </form>
 </div>
+
+<!-- Image Preview Modal -->
+<div id="image-preview-modal" class="modal-backdrop" onclick="if(event.target===this) closeImagePreview()">
+  <div class="modal-card" style="text-align: center;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+      <strong id="img-modal-title" style="font-size: 13px;"></strong>
+      <button type="button" class="msg-act-btn" onclick="closeImagePreview()">✕ Close</button>
+    </div>
+    <img id="img-modal-src" src="" alt="Preview" style="max-width: 100%; max-height: 60vh; border-radius: 10px;" />
+  </div>
+</div>
+
+<!-- Forward Modal -->
+<div id="forward-modal" class="modal-backdrop" onclick="if(event.target===this) closeForwardModal()">
+  <div class="modal-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+      <strong>Forward Message</strong>
+      <button type="button" class="msg-act-btn" onclick="closeForwardModal()">✕</button>
+    </div>
+    <form id="forward-form" method="POST" action="">
+      <div style="margin-bottom: 10px;">
+        <select name="target_room_id" style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #d1d5db;">
+          {% for r_item in rooms_sidebar %}
+            {% if r_item.room.id != active_room.id %}
+              <option value="{{ r_item.room.id }}">{{ r_item.title }} ({{ "Group" if r_item.is_group else "DM" }})</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="send-pill-btn" style="width: 100%; padding: 9px;">Forward</button>
+    </form>
+  </div>
+</div>
+
+<!-- Group Members & Admin Modal -->
+{% if active_room.is_group %}
+<div id="group-modal" class="modal-backdrop" onclick="if(event.target===this) closeGroupModal()">
+  <div class="modal-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <strong>Group Members ({{ members_view|length }})</strong>
+      <button type="button" class="msg-act-btn" onclick="closeGroupModal()">✕</button>
+    </div>
+
+    {% if is_group_admin %}
+      <form method="POST" action="{{ url_for('manage_group', room_id=active_room.id) }}" style="display: flex; gap: 6px; margin-bottom: 12px;">
+        <input type="hidden" name="action" value="rename" />
+        <input type="text" name="group_name" value="{{ active_room.name }}" style="flex: 1; padding: 7px 10px; border-radius: 8px; border: 1px solid #d1d5db; font-size: 12px;" required />
+        <button type="submit" class="send-pill-btn">Save Name</button>
+      </form>
+    {% endif %}
+
+    <div>
+      {% for mem in members_view %}
+        <div class="member-row">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <a href="{{ url_for('profile', target_user_id=mem.user.id) }}" class="avatar-link">
+              {% if mem.user.avatar_src %}
+                <img src="{{ mem.user.avatar_src }}" alt="Avatar" class="msg-mini-avatar" />
+              {% else %}
+                <div class="msg-mini-avatar">{{ mem.user.username[0]|upper }}</div>
+              {% endif %}
+              <span class="status-dot {{ 'online' if mem.user.is_online else 'offline' }}"></span>
+            </a>
+            <div>
+              <a href="{{ url_for('profile', target_user_id=mem.user.id) }}" style="font-weight: 700; color: #111827;">{{ mem.user.username }}</a>
+              {% if mem.is_admin %}<span style="font-size: 11px; color: #1f8a7d; font-weight: 700;"> (Admin)</span>{% endif %}
+              {% if mem.is_timed_out %}<div style="font-size: 11px; color: #d97706;">Timed out</div>{% endif %}
+            </div>
+          </div>
+
+          {% if is_group_admin and not mem.is_admin %}
+            <form method="POST" action="{{ url_for('manage_group', room_id=active_room.id) }}" style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
+              <input type="hidden" name="target_user_id" value="{{ mem.user.id }}" />
+              {% if mem.is_timed_out %}
+                <button type="submit" name="action" value="remove_timeout" class="msg-act-btn">Untimeout</button>
+              {% else %}
+                <input type="number" name="minutes" value="10" min="1" style="width: 44px; padding: 2px 4px; font-size: 11px; border: 1px solid #d1d5db; border-radius: 6px;" />
+                <button type="submit" name="action" value="timeout" class="msg-act-btn">Timeout</button>
+              {% endif %}
+              <button type="submit" name="action" value="kick" class="msg-act-btn">Kick</button>
+              <button type="submit" name="action" value="ban" class="msg-act-btn delete-btn">Ban</button>
+            </form>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+
+    {% if is_group_admin and banned_users_view %}
+      <div style="margin-top: 12px;">
+        <div style="font-size: 11px; font-weight: 700; color: #6b7280; margin-bottom: 6px;">BANNED USERS</div>
+        {% for bu in banned_users_view %}
+          <div class="member-row">
+            <span>{{ bu.username }}</span>
+            <form method="POST" action="{{ url_for('manage_group', room_id=active_room.id) }}" style="display: inline;">
+              <input type="hidden" name="target_user_id" value="{{ bu.id }}" />
+              <button type="submit" name="action" value="unban" class="msg-act-btn">Unban</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block extra_js %}
 <script>
+  function formatLocalTime(isoStr) {
+    if (!isoStr) return "";
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function hydrateLocalTimes(root = document) {
+    root.querySelectorAll(".local-time[data-utc]").forEach((el) => {
+      if (!el.textContent) {
+        el.textContent = formatLocalTime(el.dataset.utc);
+      }
+    });
+  }
+
+  hydrateLocalTimes();
+
   const searchToggleBtn = document.getElementById("search-toggle-btn");
   const searchDrawer = document.getElementById("search-drawer");
   const searchInputBox = document.getElementById("search-input-box");
   if (searchToggleBtn && searchDrawer) {
     searchToggleBtn.addEventListener("click", () => {
       searchDrawer.classList.toggle("open");
-      if (searchDrawer.classList.contains("open") && searchInputBox) {
-        searchInputBox.focus();
-      }
+      if (searchDrawer.classList.contains("open") && searchInputBox) searchInputBox.focus();
     });
   }
 
@@ -561,19 +836,86 @@
     });
   }
 
-  const msgList = document.getElementById("messages-list");
+  // Reply handling
+  const replyBanner = document.getElementById("reply-banner");
+  const replyBannerText = document.getElementById("reply-banner-text");
+  const replyToIdInput = document.getElementById("reply-to-id-input");
+  const cancelReplyBtn = document.getElementById("cancel-reply-btn");
 
+  function setReplyTarget(msgId, senderName, text) {
+    if (!replyBanner || !replyBannerText || !replyToIdInput) return;
+    replyToIdInput.value = String(msgId);
+    replyBannerText.textContent = "Replying to " + senderName + ": " + text;
+    replyBanner.classList.add("active");
+    if (msgBodyInput) msgBodyInput.focus();
+  }
+
+  if (cancelReplyBtn) {
+    cancelReplyBtn.addEventListener("click", () => {
+      if (replyToIdInput) replyToIdInput.value = "";
+      if (replyBanner) replyBanner.classList.remove("active");
+    });
+  }
+
+  // Forward handling
+  const forwardModal = document.getElementById("forward-modal");
+  const forwardForm = document.getElementById("forward-form");
+  function openForwardModal(msgId) {
+    if (!forwardModal || !forwardForm) return;
+    forwardForm.action = "/messages/forward/" + msgId;
+    forwardModal.classList.add("open");
+  }
+  function closeForwardModal() {
+    if (forwardModal) forwardModal.classList.remove("open");
+  }
+
+  // Image preview modal
+  const imgModal = document.getElementById("image-preview-modal");
+  const imgModalSrc = document.getElementById("img-modal-src");
+  const imgModalTitle = document.getElementById("img-modal-title");
+  function openImagePreview(src, title) {
+    if (!imgModal || !imgModalSrc) return;
+    imgModalSrc.src = src;
+    if (imgModalTitle) imgModalTitle.textContent = title || "Image";
+    imgModal.classList.add("open");
+  }
+  function closeImagePreview() {
+    if (imgModal) imgModal.classList.remove("open");
+  }
+
+  // Group modal
+  const groupModal = document.getElementById("group-modal");
+  const openGroupModalBtn = document.getElementById("open-group-modal-btn");
+  if (openGroupModalBtn && groupModal) {
+    openGroupModalBtn.addEventListener("click", () => groupModal.classList.add("open"));
+  }
+  function closeGroupModal() {
+    if (groupModal) groupModal.classList.remove("open");
+  }
+
+  function bindMessageButtons(container) {
+    container.querySelectorAll(".reply-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        setReplyTarget(btn.dataset.replyId, btn.dataset.replySender, btn.dataset.replyText);
+      });
+    });
+    container.querySelectorAll(".forward-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        openForwardModal(btn.dataset.forwardId);
+      });
+    });
+  }
+  bindMessageButtons(document);
+
+  const msgList = document.getElementById("messages-list");
   function scrollMessagesToBottom() {
     if (!msgList) return;
-    const lastMsg = msgList.lastElementChild;
-    if (lastMsg) {
-      lastMsg.scrollIntoView({ block: "end" });
-    }
     msgList.scrollTop = msgList.scrollHeight;
+    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
   }
 
   window.addEventListener("load", () => {
-    requestAnimationFrame(scrollMessagesToBottom);
+    setTimeout(scrollMessagesToBottom, 50);
   });
 
   const messageForm = document.getElementById("message-form");
@@ -588,159 +930,206 @@
   if (msgList) {
     msgList.querySelectorAll(".msg-row[data-msg-id]").forEach((el) => {
       const idNum = Number(el.dataset.msgId);
-      if (Number.isFinite(idNum) && idNum > lastMessageId) {
-        lastMessageId = idNum;
-      }
+      if (Number.isFinite(idNum) && idNum > lastMessageId) lastMessageId = idNum;
     });
   }
 
-  function buildMessageRow(msgId, isOutgoing, senderId, senderInitial, senderName, timeStr, textBody, voiceLabel, fileLabel, fileUrl, originalFilename) {
+  function buildMessageRowFromData(msg) {
+    const isOutgoing = CURRENT_USER_ID && Number(msg.sender_id) === CURRENT_USER_ID;
     const row = document.createElement("div");
     row.className = "msg-row " + (isOutgoing ? "outgoing" : "incoming");
-    if (msgId) {
-      row.dataset.msgId = String(msgId);
-    }
+    if (msg.id) row.dataset.msgId = String(msg.id);
 
     if (!isOutgoing) {
       const top = document.createElement("div");
       top.className = "incoming-top";
 
-      const miniAv = document.createElement("div");
-      miniAv.className = "msg-mini-avatar";
-      miniAv.textContent = (senderInitial || "?").toUpperCase();
-      top.appendChild(miniAv);
+      const avLink = document.createElement("a");
+      avLink.href = msg.sender_id ? ("/profile/" + msg.sender_id) : "/profile";
+      avLink.className = "avatar-link";
 
-      if (senderId) {
-        const nameLink = document.createElement("a");
-        nameLink.href = "/profile/" + senderId;
-        nameLink.className = "msg-sender-name";
-        nameLink.textContent = senderName || "";
-        top.appendChild(nameLink);
+      if (msg.sender_avatar) {
+        const img = document.createElement("img");
+        img.src = msg.sender_avatar;
+        img.alt = "Avatar";
+        img.className = "msg-mini-avatar";
+        avLink.appendChild(img);
       } else {
-        const nameSpan = document.createElement("span");
-        nameSpan.className = "msg-sender-name";
-        nameSpan.textContent = senderName || "";
-        top.appendChild(nameSpan);
+        const badge = document.createElement("div");
+        badge.className = "msg-mini-avatar";
+        badge.textContent = msg.sender_initial || "?";
+        avLink.appendChild(badge);
       }
+
+      const dot = document.createElement("span");
+      dot.className = "status-dot " + (msg.sender_online ? "online" : "offline");
+      avLink.appendChild(dot);
+      top.appendChild(avLink);
+
+      const nameLink = document.createElement("a");
+      nameLink.href = msg.sender_id ? ("/profile/" + msg.sender_id) : "/profile";
+      nameLink.className = "msg-sender-name";
+      nameLink.textContent = msg.sender_name || "User";
+      top.appendChild(nameLink);
+
       row.appendChild(top);
     }
 
-    if (textBody) {
+    if (msg.reply_to) {
+      const repBox = document.createElement("div");
+      repBox.className = "reply-quote-box";
+      repBox.textContent = msg.reply_to.sender_name + ": " + msg.reply_to.body;
+      row.appendChild(repBox);
+    }
+
+    if (msg.body) {
       const bubble = document.createElement("div");
       bubble.className = "msg-bubble";
-      bubble.textContent = textBody;
+      bubble.textContent = msg.body;
       row.appendChild(bubble);
     }
 
-    if (voiceLabel) {
+    if (msg.msg_type === "voice" && msg.file_url) {
       const vBox = document.createElement("div");
       vBox.className = "voice-wave-box";
-      vBox.textContent = voiceLabel;
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.src = msg.file_url;
+      audio.style.maxWidth = "190px";
+      audio.style.height = "30px";
+      vBox.appendChild(audio);
       row.appendChild(vBox);
-    } else if (fileLabel) {
-      const fBox = document.createElement("div");
-      fBox.className = "file-chip";
-      fBox.textContent = fileLabel;
-      row.appendChild(fBox);
-    } else if (fileUrl && originalFilename) {
-      const fBox = document.createElement("div");
-      fBox.className = "file-chip";
+    } else if (msg.msg_type === "file" && msg.file_url) {
+      if (msg.is_image) {
+        const card = document.createElement("div");
+        card.className = "img-preview-card";
+        const img = document.createElement("img");
+        img.src = msg.file_url;
+        img.alt = msg.original_filename || "Image";
+        img.addEventListener("click", () => openImagePreview(msg.file_url, msg.original_filename));
+        card.appendChild(img);
 
-      const span = document.createElement("span");
-      span.style.overflow = "hidden";
-      span.style.textOverflow = "ellipsis";
-      span.style.whiteSpace = "nowrap";
-      span.textContent = "🔒 " + originalFilename;
-
-      const link = document.createElement("a");
-      link.href = fileUrl;
-      link.className = "send-pill-btn";
-      link.style.textDecoration = "none";
-      link.textContent = "Save";
-
-      fBox.appendChild(span);
-      fBox.appendChild(link);
-      row.appendChild(fBox);
+        const footer = document.createElement("div");
+        footer.className = "img-preview-footer";
+        const span = document.createElement("span");
+        span.textContent = msg.original_filename || "Image";
+        const dl = document.createElement("a");
+        dl.href = msg.download_url || (msg.file_url + "?download=1");
+        dl.textContent = "Save";
+        dl.style.color = "#1f8a7d";
+        dl.style.fontWeight = "700";
+        footer.appendChild(span);
+        footer.appendChild(dl);
+        card.appendChild(footer);
+        row.appendChild(card);
+      } else {
+        const fBox = document.createElement("div");
+        fBox.className = "file-chip";
+        const span = document.createElement("span");
+        span.textContent = "🔒 " + (msg.original_filename || "File");
+        const link = document.createElement("a");
+        link.href = msg.download_url || (msg.file_url + "?download=1");
+        link.className = "send-pill-btn";
+        link.style.textDecoration = "none";
+        link.textContent = "Save";
+        fBox.appendChild(span);
+        fBox.appendChild(link);
+        row.appendChild(fBox);
+      }
     }
 
-    const ts = document.createElement("div");
-    ts.className = "msg-time";
-    ts.textContent = timeStr || "";
-    row.appendChild(ts);
+    const meta = document.createElement("div");
+    meta.className = "msg-meta-row";
 
+    const ts = document.createElement("span");
+    ts.className = "msg-time";
+    ts.textContent = formatLocalTime(msg.created_iso);
+    meta.appendChild(ts);
+
+    if (isOutgoing) {
+      const st = document.createElement("span");
+      st.className = "msg-status-label";
+      st.dataset.statusMsgId = String(msg.id);
+      st.textContent = msg.status_label || (msg.is_read ? "Seen" : "Delivered");
+      meta.appendChild(st);
+    }
+
+    const actBar = document.createElement("div");
+    actBar.className = "msg-actions-bar";
+
+    const repBtn = document.createElement("button");
+    repBtn.type = "button";
+    repBtn.className = "msg-act-btn";
+    repBtn.textContent = "Reply";
+    repBtn.addEventListener("click", () => {
+      setReplyTarget(msg.id, msg.sender_name || "User", msg.body || msg.original_filename || "Attachment");
+    });
+    actBar.appendChild(repBtn);
+
+    const fwdBtn = document.createElement("button");
+    fwdBtn.type = "button";
+    fwdBtn.className = "msg-act-btn";
+    fwdBtn.textContent = "Forward";
+    fwdBtn.addEventListener("click", () => openForwardModal(msg.id));
+    actBar.appendChild(fwdBtn);
+
+    if (isOutgoing && msg.id) {
+      const delForm = document.createElement("form");
+      delForm.method = "POST";
+      delForm.action = "/messages/delete/" + msg.id;
+      delForm.style.display = "inline";
+      const delBtn = document.createElement("button");
+      delBtn.type = "submit";
+      delBtn.className = "msg-act-btn delete-btn";
+      delBtn.textContent = "Delete";
+      delForm.appendChild(delBtn);
+      actBar.appendChild(delForm);
+    }
+
+    meta.appendChild(actBar);
+    row.appendChild(meta);
     return row;
   }
 
-  function appendSentMessagePreview(textBody, attachmentFile, voiceFile) {
-    if (!msgList) return;
-    if (!textBody && !attachmentFile && !voiceFile) return;
-
-    const row = buildMessageRow(
-      0,
-      true,
-      CURRENT_USER_ID,
-      CURRENT_USER.initial,
-      CURRENT_USER.username,
-      "",
-      textBody,
-      voiceFile ? ("🎤 " + voiceFile.name) : "",
-      attachmentFile ? ("🔒 " + attachmentFile.name) : "",
-      "",
-      ""
-    );
-    row.dataset.optimistic = "1";
-    msgList.appendChild(row);
-    scrollMessagesToBottom();
-  }
-
-  function appendIncomingMessage(msg) {
+  function appendMessageData(msg, shouldScroll = true) {
     if (!msgList || !msg) return;
-    if (msg.id && msgList.querySelector('.msg-row[data-msg-id="' + msg.id + '"]')) {
-      return;
-    }
-    const isOutgoing = CURRENT_USER_ID && Number(msg.sender_id) === CURRENT_USER_ID;
-    const row = buildMessageRow(
-      msg.id,
-      isOutgoing,
-      msg.sender_id || null,
-      msg.sender_initial || (msg.sender_name ? msg.sender_name[0] : "?"),
-      msg.sender_name || "",
-      msg.time_str || "",
-      msg.body || "",
-      msg.msg_type === "voice" ? "🎤 Voice" : "",
-      "",
-      msg.msg_type === "file" && msg.file_url ? msg.file_url : "",
-      msg.msg_type === "file" ? (msg.original_filename || "File") : ""
-    );
+    if (msg.id && msgList.querySelector('.msg-row[data-msg-id="' + msg.id + '"]')) return;
+    const row = buildMessageRowFromData(msg);
     msgList.appendChild(row);
-    scrollMessagesToBottom();
+    if (shouldScroll) scrollMessagesToBottom();
   }
 
   async function pollNewMessages() {
-    const activeEl = document.activeElement;
-    const isTyping = activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA");
-    const isRecording = typeof mediaRecorder !== "undefined" && mediaRecorder && mediaRecorder.state === "recording";
-
-    if (!activeRoomId || isTyping || isRecording) {
-      return;
-    }
-
+    if (!activeRoomId) return;
     try {
       const res = await fetch("/api/messages/" + activeRoomId + "?after_id=" + lastMessageId, {
         headers: { "X-Requested-With": "XMLHttpRequest" }
       });
       if (!res.ok) return;
       const data = await res.json();
-      if (data && Array.isArray(data.messages)) {
+
+      if (data && data.read_statuses) {
+        Object.entries(data.read_statuses).forEach(([mid, label]) => {
+          const el = msgList && msgList.querySelector('[data-status-msg-id="' + mid + '"]');
+          if (el) el.textContent = label;
+        });
+      }
+
+      if (data && typeof data.other_online === "boolean") {
+        const hDot = document.getElementById("header-status-dot");
+        if (hDot) {
+          hDot.classList.toggle("online", data.other_online);
+          hDot.classList.toggle("offline", !data.other_online);
+        }
+      }
+
+      if (data && Array.isArray(data.messages) && data.messages.length > 0) {
         for (const m of data.messages) {
           const idNum = Number(m.id);
           if (Number.isFinite(idNum) && idNum > lastMessageId) {
             lastMessageId = idNum;
-            const optimistic = msgList && msgList.querySelector('.msg-row[data-optimistic="1"]');
-            if (optimistic && Number(m.sender_id) === CURRENT_USER_ID && (m.body || "") === (optimistic.querySelector(".msg-bubble")?.textContent || "")) {
-              optimistic.remove();
-            }
-            appendIncomingMessage(m);
+            appendMessageData(m, true);
           }
         }
       }
@@ -779,13 +1168,19 @@
         });
 
         if (res.ok) {
-          appendSentMessagePreview(textVal, attFile, vFile);
+          const data = await res.json();
+          if (data && data.message) {
+            const idNum = Number(data.message.id);
+            if (Number.isFinite(idNum) && idNum > lastMessageId) lastMessageId = idNum;
+            appendMessageData(data.message, true);
+          }
           if (msgBodyInput) msgBodyInput.value = "";
           if (attachmentInput) attachmentInput.value = "";
           if (voiceFileInput) voiceFileInput.value = "";
           if (filePickedLabel) filePickedLabel.textContent = "";
           if (recStatus) recStatus.textContent = "";
-          pollNewMessages();
+          if (replyToIdInput) replyToIdInput.value = "";
+          if (replyBanner) replyBanner.classList.remove("active");
         } else {
           messageForm.submit();
         }
@@ -813,7 +1208,7 @@
             const dt = new DataTransfer();
             dt.items.add(file);
             voiceFileInput.files = dt.files;
-            if (recStatus) recStatus.textContent = "Ready";
+            if (recStatus) recStatus.textContent = "Voice ready";
             stream.getTracks().forEach((t) => t.stop());
           };
           mediaRecorder.start();
@@ -830,7 +1225,7 @@
   }
 
   if (activeRoomId) {
-    setInterval(pollNewMessages, 4000);
+    setInterval(pollNewMessages, 3000);
   }
 </script>
 {% endblock %}
