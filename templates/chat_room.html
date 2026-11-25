@@ -8,6 +8,7 @@
     border-top-left-radius: 0;
     border-top-right-radius: 0;
     padding-bottom: 162px;
+    overflow: visible;
   }
 
   .sheet-handle {
@@ -30,7 +31,7 @@
     background-color: #ffffff;
     border-bottom: 1px solid #eef2f1;
     position: sticky;
-    top: 52px;
+    top: 0;
     z-index: 30;
   }
 
@@ -48,6 +49,11 @@
     line-height: 1;
     padding: 4px 6px 4px 0;
     text-decoration: none;
+  }
+
+  .back-arrow:hover {
+    text-decoration: none;
+    color: #1f7a6d;
   }
 
   .room-avatar-wrap {
@@ -173,13 +179,19 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    overflow-y: auto;
   }
 
   .msg-row {
     display: flex;
     flex-direction: column;
     max-width: 84%;
+    border-radius: 14px;
+    transition: background-color 0.35s ease;
+  }
+
+  .msg-row.highlight-jump {
+    background-color: #fef3c7;
+    padding: 4px;
   }
 
   .msg-row.incoming {
@@ -241,12 +253,18 @@
     border-left: 3px solid #1f8a7d;
     background-color: #eef3f5;
     color: #374151;
+    cursor: pointer;
+  }
+
+  .reply-quote-box:hover {
+    background-color: #e2ecef;
   }
 
   .msg-row.incoming .reply-quote-box,
   .msg-row.incoming .msg-bubble,
   .msg-row.incoming .voice-wave-box,
   .msg-row.incoming .file-chip,
+  .msg-row.incoming .img-preview-card,
   .msg-row.incoming .msg-meta-row {
     margin-left: 42px;
   }
@@ -473,6 +491,17 @@
     flex-shrink: 0;
   }
 
+  .danger-pill-btn {
+    background-color: #dc2626;
+    color: #ffffff;
+    border: none;
+    border-radius: 999px;
+    padding: 6px 11px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
   .modal-backdrop {
     display: none;
     position: fixed;
@@ -584,7 +613,7 @@
         {% endif %}
 
         {% if m.reply_to %}
-          <div class="reply-quote-box">
+          <div class="reply-quote-box jump-to-msg" data-jump-to-id="{{ m.reply_to.id }}">
             <strong>{{ m.reply_sender_name }}:</strong> {{ m.reply_to.body or m.reply_to.original_filename or "Attachment" }}
           </div>
         {% endif %}
@@ -624,9 +653,7 @@
             <button type="button" class="msg-act-btn reply-btn" data-reply-id="{{ m.id }}" data-reply-sender="{{ m.sender.username if m.sender else 'User' }}" data-reply-text="{{ m.body or m.original_filename or 'Attachment' }}">Reply</button>
             <button type="button" class="msg-act-btn forward-btn" data-forward-id="{{ m.id }}">Forward</button>
             {% if m.can_delete %}
-              <form method="POST" action="{{ url_for('delete_message', message_id=m.id) }}" style="display: inline;">
-                <button type="submit" class="msg-act-btn delete-btn">Delete</button>
-              </form>
+              <button type="button" class="msg-act-btn delete-btn ajax-delete-btn" data-delete-id="{{ m.id }}">Delete</button>
             {% endif %}
           </div>
         </div>
@@ -753,6 +780,7 @@
           {% if is_group_admin and not mem.is_admin %}
             <form method="POST" action="{{ url_for('manage_group', room_id=active_room.id) }}" style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
               <input type="hidden" name="target_user_id" value="{{ mem.user.id }}" />
+              <button type="submit" name="action" value="transfer_admin" class="msg-act-btn">Make Admin</button>
               {% if mem.is_timed_out %}
                 <button type="submit" name="action" value="remove_timeout" class="msg-act-btn">Untimeout</button>
               {% else %}
@@ -781,6 +809,17 @@
         {% endfor %}
       </div>
     {% endif %}
+
+    <div style="display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap;">
+      <form method="POST" action="{{ url_for('leave_group', room_id=active_room.id) }}" style="flex: 1;">
+        <button type="submit" class="send-pill-btn" style="width: 100%; background-color: #4b5563;">Leave Group</button>
+      </form>
+      {% if is_group_admin %}
+        <form method="POST" action="{{ url_for('delete_group', room_id=active_room.id) }}" style="flex: 1;">
+          <button type="submit" class="danger-pill-btn" style="width: 100%;">Delete Group</button>
+        </form>
+      {% endif %}
+    </div>
   </div>
 </div>
 {% endif %}
@@ -788,6 +827,8 @@
 
 {% block extra_js %}
 <script>
+  const msgList = document.getElementById("messages-list");
+
   function formatLocalTime(isoStr) {
     if (!isoStr) return "";
     const d = new Date(isoStr);
@@ -804,6 +845,31 @@
   }
 
   hydrateLocalTimes();
+
+  function jumpToMessage(targetId) {
+    if (!msgList || !targetId) return;
+    const targetEl = msgList.querySelector('.msg-row[data-msg-id="' + targetId + '"]');
+    if (!targetEl) return;
+    targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    targetEl.classList.add("highlight-jump");
+    setTimeout(() => targetEl.classList.remove("highlight-jump"), 1400);
+  }
+
+  async function deleteMessageAjax(msgId) {
+    if (!msgId) return;
+    try {
+      const res = await fetch("/messages/delete/" + msgId, {
+        method: "POST",
+        headers: { "X-Requested-With": "XMLHttpRequest" }
+      });
+      if (res.ok && msgList) {
+        const row = msgList.querySelector('.msg-row[data-msg-id="' + msgId + '"]');
+        if (row) row.remove();
+      }
+    } catch (err) {
+      // Ignore transient network errors
+    }
+  }
 
   const searchToggleBtn = document.getElementById("search-toggle-btn");
   const searchDrawer = document.getElementById("search-drawer");
@@ -836,7 +902,6 @@
     });
   }
 
-  // Reply handling
   const replyBanner = document.getElementById("reply-banner");
   const replyBannerText = document.getElementById("reply-banner-text");
   const replyToIdInput = document.getElementById("reply-to-id-input");
@@ -857,7 +922,6 @@
     });
   }
 
-  // Forward handling
   const forwardModal = document.getElementById("forward-modal");
   const forwardForm = document.getElementById("forward-form");
   function openForwardModal(msgId) {
@@ -869,7 +933,6 @@
     if (forwardModal) forwardModal.classList.remove("open");
   }
 
-  // Image preview modal
   const imgModal = document.getElementById("image-preview-modal");
   const imgModalSrc = document.getElementById("img-modal-src");
   const imgModalTitle = document.getElementById("img-modal-title");
@@ -883,7 +946,6 @@
     if (imgModal) imgModal.classList.remove("open");
   }
 
-  // Group modal
   const groupModal = document.getElementById("group-modal");
   const openGroupModalBtn = document.getElementById("open-group-modal-btn");
   if (openGroupModalBtn && groupModal) {
@@ -900,31 +962,31 @@
       });
     });
     container.querySelectorAll(".forward-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        openForwardModal(btn.dataset.forwardId);
-      });
+      btn.addEventListener("click", () => openForwardModal(btn.dataset.forwardId));
+    });
+    container.querySelectorAll(".ajax-delete-btn").forEach((btn) => {
+      btn.addEventListener("click", () => deleteMessageAjax(btn.dataset.deleteId));
+    });
+    container.querySelectorAll(".jump-to-msg").forEach((box) => {
+      box.addEventListener("click", () => jumpToMessage(box.dataset.jumpToId));
     });
   }
   bindMessageButtons(document);
 
-  const msgList = document.getElementById("messages-list");
   function scrollMessagesToBottom() {
     if (!msgList) return;
-    msgList.scrollTop = msgList.scrollHeight;
     window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
   }
 
   window.addEventListener("load", () => {
-    setTimeout(scrollMessagesToBottom, 50);
+    setTimeout(() => {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "auto" });
+    }, 50);
   });
 
   const messageForm = document.getElementById("message-form");
   const activeRoomId = (messageForm && messageForm.dataset.roomId) || "";
   const CURRENT_USER_ID = Number((messageForm && messageForm.dataset.userId) || 0);
-  const CURRENT_USER = {
-    username: (messageForm && messageForm.dataset.username) || "",
-    initial: (messageForm && messageForm.dataset.initial) || ""
-  };
 
   let lastMessageId = 0;
   if (msgList) {
@@ -979,6 +1041,7 @@
       const repBox = document.createElement("div");
       repBox.className = "reply-quote-box";
       repBox.textContent = msg.reply_to.sender_name + ": " + msg.reply_to.body;
+      repBox.addEventListener("click", () => jumpToMessage(msg.reply_to.id));
       row.appendChild(repBox);
     }
 
@@ -1074,17 +1137,13 @@
     fwdBtn.addEventListener("click", () => openForwardModal(msg.id));
     actBar.appendChild(fwdBtn);
 
-    if (isOutgoing && msg.id) {
-      const delForm = document.createElement("form");
-      delForm.method = "POST";
-      delForm.action = "/messages/delete/" + msg.id;
-      delForm.style.display = "inline";
+    if (msg.can_delete && msg.id) {
       const delBtn = document.createElement("button");
-      delBtn.type = "submit";
+      delBtn.type = "button";
       delBtn.className = "msg-act-btn delete-btn";
       delBtn.textContent = "Delete";
-      delForm.appendChild(delBtn);
-      actBar.appendChild(delForm);
+      delBtn.addEventListener("click", () => deleteMessageAjax(msg.id));
+      actBar.appendChild(delBtn);
     }
 
     meta.appendChild(actBar);
@@ -1100,14 +1159,33 @@
     if (shouldScroll) scrollMessagesToBottom();
   }
 
+  function getKnownMessageIds() {
+    if (!msgList) return [];
+    const ids = [];
+    msgList.querySelectorAll(".msg-row[data-msg-id]").forEach((el) => {
+      const n = Number(el.dataset.msgId);
+      if (Number.isFinite(n) && n > 0) ids.push(n);
+    });
+    return ids;
+  }
+
   async function pollNewMessages() {
     if (!activeRoomId) return;
     try {
-      const res = await fetch("/api/messages/" + activeRoomId + "?after_id=" + lastMessageId, {
+      const knownIds = getKnownMessageIds().join(",");
+      const url = "/api/messages/" + activeRoomId + "?after_id=" + lastMessageId + (knownIds ? "&known_ids=" + encodeURIComponent(knownIds) : "");
+      const res = await fetch(url, {
         headers: { "X-Requested-With": "XMLHttpRequest" }
       });
       if (!res.ok) return;
       const data = await res.json();
+
+      if (data && Array.isArray(data.deleted_ids) && msgList) {
+        data.deleted_ids.forEach((did) => {
+          const row = msgList.querySelector('.msg-row[data-msg-id="' + did + '"]');
+          if (row) row.remove();
+        });
+      }
 
       if (data && data.read_statuses) {
         Object.entries(data.read_statuses).forEach(([mid, label]) => {
@@ -1127,10 +1205,8 @@
       if (data && Array.isArray(data.messages) && data.messages.length > 0) {
         for (const m of data.messages) {
           const idNum = Number(m.id);
-          if (Number.isFinite(idNum) && idNum > lastMessageId) {
-            lastMessageId = idNum;
-            appendMessageData(m, true);
-          }
+          if (Number.isFinite(idNum) && idNum > lastMessageId) lastMessageId = idNum;
+          appendMessageData(m, true);
         }
       }
     } catch (err) {

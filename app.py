@@ -354,7 +354,7 @@ def get_shared_media_for_pair(viewer_id, target_id):
     return items
 
 
-def serialize_message(msg, user_id, muted_user_ids, users_cache):
+def serialize_message(msg, user_id, muted_user_ids, users_cache, is_group_admin=False):
     muted_sender = msg.sender_id in muted_user_ids
     sender = users_cache.get(msg.sender_id) or msg.sender
     sender_name = sender.username if sender else ""
@@ -386,6 +386,7 @@ def serialize_message(msg, user_id, muted_user_ids, users_cache):
         "file_url": f"/uploads/{file_fn}" if file_fn else "",
         "download_url": f"/uploads/{file_fn}?download=1" if file_fn else "",
         "is_read": bool(msg.is_read),
+        "can_delete": bool((msg.sender_id == user_id) or is_group_admin),
         "status_label": ("Seen" if msg.is_read else "Delivered") if msg.sender_id == user_id else "",
         "reply_to": reply_info,
     }
@@ -690,6 +691,54 @@ def create_group():
     )
 
 
+@app.route("/groups/<int:room_id>/leave", methods=["POST"])
+@login_required
+def leave_group(room_id):
+    user = current_user()
+    room = db.session.get(ChatRoom, room_id)
+    if not room or not room.is_group:
+        return redirect(url_for("index"))
+
+    ChatMember.query.filter_by(room_id=room_id, user_id=user.id).delete()
+    remaining = ChatMember.query.filter_by(room_id=room_id).order_by(ChatMember.id.asc()).all()
+
+    if not remaining:
+        Message.query.filter_by(room_id=room_id).delete()
+        GroupBan.query.filter_by(room_id=room_id).delete()
+        db.session.delete(room)
+        db.session.commit()
+        flash("Left and removed empty group.")
+        return redirect(url_for("index"))
+
+    if room.created_by == user.id:
+        room.created_by = remaining[0].user_id
+
+    db.session.commit()
+    flash(f"Left {room.name}.")
+    return redirect(url_for("index"))
+
+
+@app.route("/groups/<int:room_id>/delete", methods=["POST"])
+@login_required
+def delete_group(room_id):
+    user = current_user()
+    room = db.session.get(ChatRoom, room_id)
+    if not room or not room.is_group:
+        return redirect(url_for("index"))
+
+    if room.created_by != user.id:
+        flash("Only the group admin can delete this group.")
+        return redirect(url_for("chat_room", room_id=room_id))
+
+    Message.query.filter_by(room_id=room_id).delete()
+    ChatMember.query.filter_by(room_id=room_id).delete()
+    GroupBan.query.filter_by(room_id=room_id).delete()
+    db.session.delete(room)
+    db.session.commit()
+    flash("Group deleted.")
+    return redirect(url_for("index"))
+
+
 @app.route("/groups/<int:room_id>/manage", methods=["POST"])
 @login_required
 def manage_group(room_id):
@@ -700,7 +749,7 @@ def manage_group(room_id):
         return redirect(url_for("index"))
 
     if room.created_by != user.id:
-        flash("Only the group creator can manage group settings or members.")
+        flash("Only the group admin can manage group settings or members.")
         return redirect(url_for("chat_room", room_id=room_id))
 
     action = request.form.get("action", "")
@@ -715,12 +764,17 @@ def manage_group(room_id):
 
     target_id = int(request.form.get("target_user_id", 0))
     if target_id == user.id:
-        flash("You cannot moderate yourself.")
+        flash("You cannot perform this action on yourself.")
         return redirect(url_for("chat_room", room_id=room_id))
 
     member = ChatMember.query.filter_by(room_id=room_id, user_id=target_id).first()
 
-    if action == "timeout":
+    if action == "transfer_admin":
+        if member:
+            room.created_by = target_id
+            db.session.commit()
+            flash("Admin rights transferred.")
+    elif action == "timeout":
         minutes = max(1, int(request.form.get("minutes", 10) or 10))
         if member:
             member.timeout_until = datetime.utcnow() + timedelta(minutes=minutes)
@@ -901,6 +955,19 @@ def api_messages(room_id):
     db.session.commit()
 
     after_id = request.args.get("after_id", 0, type=int)
+    known_ids_raw = request.args.get("known_ids", "")
+    known_ids = [int(x) for x in known_ids_raw.split(",") if x.isdigit()]
+
+    deleted_ids = []
+    if known_ids:
+        existing_ids = {
+            row[0]
+            for row in db.session.query(Message.id)
+            .filter(Message.room_id == room_id, Message.id.in_(known_ids))
+            .all()
+        }
+        deleted_ids = [mid for mid in known_ids if mid not in existing_ids]
+
     new_msgs = (
         Message.query.filter(Message.room_id == room_id, Message.id > after_id)
         .order_by(Message.id.asc())
@@ -925,6 +992,7 @@ def api_messages(room_id):
 
     other_online = None
     room = db.session.get(ChatRoom, room_id)
+    is_group_admin = bool(room and room.is_group and room.created_by == user.id)
     if room and not room.is_group:
         other_m = ChatMember.query.filter(ChatMember.room_id == room_id, ChatMember.user_id != user.id).first()
         if other_m:
@@ -932,8 +1000,16 @@ def api_messages(room_id):
             if other_u:
                 other_online = bool(other_u.is_online)
 
-    payload = [serialize_message(m, user.id, muted_user_ids, users_cache) for m in new_msgs]
-    return jsonify({"messages": payload, "read_statuses": read_statuses, "other_online": other_online})
+    payload = [
+        serialize_message(m, user.id, muted_user_ids, users_cache, is_group_admin=is_group_admin)
+        for m in new_msgs
+    ]
+    return jsonify({
+        "messages": payload,
+        "read_statuses": read_statuses,
+        "other_online": other_online,
+        "deleted_ids": deleted_ids,
+    })
 
 
 @app.route("/messages/send/<int:room_id>", methods=["POST"])
@@ -1010,10 +1086,13 @@ def send_message(room_id):
     db.session.add(msg)
     db.session.commit()
 
+    is_group_admin = bool(room and room.is_group and room.created_by == user.id)
     if is_ajax:
         return jsonify({
             "ok": True,
-            "message": serialize_message(msg, user.id, set(), {user.id: user}),
+            "message": serialize_message(
+                msg, user.id, set(), {user.id: user}, is_group_admin=is_group_admin
+            ),
         })
 
     return redirect(url_for("chat_room", room_id=room_id))
@@ -1022,14 +1101,19 @@ def send_message(room_id):
 @app.route("/messages/delete/<int:message_id>", methods=["POST"])
 @login_required
 def delete_message(message_id):
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     user = current_user()
     msg = db.session.get(Message, message_id)
     if not msg:
+        if is_ajax:
+            return jsonify({"ok": True, "deleted_id": message_id})
         return redirect(url_for("index"))
 
     room = db.session.get(ChatRoom, msg.room_id)
     is_admin = bool(room and room.is_group and room.created_by == user.id)
     if msg.sender_id != user.id and not is_admin:
+        if is_ajax:
+            return jsonify({"error": "Forbidden"}), 403
         flash("You can only delete your own messages.")
         return redirect(url_for("chat_room", room_id=msg.room_id))
 
@@ -1037,6 +1121,10 @@ def delete_message(message_id):
     Message.query.filter_by(reply_to_id=msg.id).update({"reply_to_id": None})
     db.session.delete(msg)
     db.session.commit()
+
+    if is_ajax:
+        return jsonify({"ok": True, "deleted_id": message_id})
+
     return redirect(url_for("chat_room", room_id=room_id))
 
 
