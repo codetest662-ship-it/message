@@ -1,5 +1,6 @@
 import os
 import time
+import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -18,7 +19,7 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import event
 from werkzeug.security import check_password_hash
 
-MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB (checked, never stored)
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB (checked in memory, never saved)
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change-this-secret-key")
@@ -26,7 +27,7 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 db_url = os.environ.get("DATABASE_URL")
 if not db_url:
-    raise RuntimeError("DATABASE_URL is required to read existing Neon data without local storage.")
+    raise RuntimeError("DATABASE_URL is required to read existing Neon data.")
 
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
@@ -37,26 +38,34 @@ app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_pre_ping": True,
-    # Ask Postgres to enforce read-only transactions at the connection level
     "connect_args": {"options": "-c default_transaction_read_only=on"},
 }
 
 db = SQLAlchemy(app)
 TYPING_STATE = {}
+# Ephemeral in-memory messages per room (never saved to Neon or disk)
+EPHEMERAL_MESSAGES = {}
+_EPHEMERAL_ID = -1
 
 
-class ReadOnlyStorageError(Exception):
-    """Raised when code attempts to write or store data."""
+def next_ephemeral_id():
+    global _EPHEMERAL_ID
+    _EPHEMERAL_ID -= 1
+    return _EPHEMERAL_ID
 
 
 @event.listens_for(db.session, "before_flush")
-def _block_session_writes(sess, flush_context, instances):
-    if sess.new or sess.dirty or sess.deleted:
-        sess.expunge_all()
-        raise ReadOnlyStorageError("Storage is disabled: changes are not saved.")
+def _prevent_neon_writes(sess, flush_context, instances):
+    # Discard any pending ORM mutations instead of flushing them to Neon
+    for obj in list(sess.new):
+        sess.expunge(obj)
+    for obj in list(sess.dirty):
+        sess.expunge(obj)
+    for obj in list(sess.deleted):
+        sess.expunge(obj)
 
 
-# --- Read-Only Models (matches existing tables in Neon) ---
+# --- Models (matches existing tables in Neon) ---
 class User(db.Model):
     __tablename__ = "user"
     id = db.Column(db.Integer, primary_key=True)
@@ -263,7 +272,7 @@ def get_user_rooms_sidebar(user_id, extra_users_by_id=None):
     return rooms_sidebar, rooms_by_id, other_user_id_by_room, users_cache
 
 
-def serialize_message(msg, user_id, muted_user_ids, users_cache, is_group_admin=False):
+def serialize_db_message(msg, user_id, muted_user_ids, users_cache):
     muted_sender = msg.sender_id in muted_user_ids
     sender = users_cache.get(msg.sender_id) or msg.sender
     sender_name = sender.username if sender else ""
@@ -299,6 +308,32 @@ def serialize_message(msg, user_id, muted_user_ids, users_cache, is_group_admin=
     }
 
 
+def serialize_ephemeral_message(item, user_id, muted_user_ids, users_cache):
+    muted_sender = item["sender_id"] in muted_user_ids
+    sender = users_cache.get(item["sender_id"])
+    sender_name = sender.username if sender else "User"
+    return {
+        "id": item["id"],
+        "sender_id": item["sender_id"],
+        "sender_name": sender_name,
+        "sender_initial": sender_name[0].upper() if sender_name else "?",
+        "sender_avatar": sender.avatar_src if sender else "",
+        "sender_online": bool(sender.is_online) if sender else False,
+        "created_iso": iso_utc(item["created_at"]),
+        "body": "[Muted]" if muted_sender else (item["body"] or ""),
+        "msg_type": item["msg_type"],
+        "file_filename": None,
+        "original_filename": None if muted_sender else (item["original_filename"] or ""),
+        "is_image": False,
+        "file_url": "",
+        "download_url": "",
+        "is_read": False,
+        "can_delete": False,
+        "status_label": "Sent (not saved to Neon)" if item["sender_id"] == user_id else "",
+        "reply_to": item.get("reply_to"),
+    }
+
+
 @app.route("/welcome")
 def welcome():
     if current_user():
@@ -311,7 +346,7 @@ def register():
     if current_user():
         return redirect(url_for("index"))
     if request.method == "POST":
-        flash("Read-only mode: new account creation and storage are disabled.")
+        flash("Saving to Neon is disabled.")
     return render_template("register.html")
 
 
@@ -337,7 +372,7 @@ def login():
 @app.route("/forgot-password", methods=["GET", "POST"])
 def forgot_password():
     if request.method == "POST":
-        flash("Read-only mode: password changes cannot be saved.")
+        flash("Saving to Neon is disabled.")
         return redirect(url_for("login"))
     return render_template("forgot_password.html")
 
@@ -360,7 +395,7 @@ def profile(target_user_id=None):
         flash("User not found.")
         return redirect(url_for("profile"))
     if request.method == "POST":
-        flash("Read-only mode: profile updates are not saved.")
+        flash("Profile changes are not saved to Neon.")
         return redirect(url_for("profile"))
     return render_template(
         "profile.html",
@@ -383,14 +418,14 @@ def friends_page():
 @app.route("/friends/add", methods=["POST"])
 @login_required
 def add_friend():
-    flash("Read-only mode: friend list changes are not saved.")
+    flash("Friend updates are not saved to Neon.")
     return redirect(url_for("friends_page"))
 
 
 @app.route("/friends/action", methods=["POST"])
 @login_required
 def friend_action():
-    flash("Read-only mode: friend list changes are not saved.")
+    flash("Friend updates are not saved to Neon.")
     return redirect(url_for("friends_page"))
 
 
@@ -404,7 +439,7 @@ def open_dm(friend_id):
         room = db.session.get(ChatRoom, rid)
         if room and not room.is_group:
             return redirect(url_for("chat_room", room_id=room.id))
-    flash("Read-only mode: cannot create a new chat room.")
+    flash("No existing DM room found in Neon.")
     return redirect(url_for("index"))
 
 
@@ -414,7 +449,7 @@ def create_group():
     user = current_user()
     friends, _, _, _ = get_friends_data(user.id)
     if request.method == "POST":
-        flash("Read-only mode: new groups cannot be saved.")
+        flash("New groups are not saved to Neon.")
         return redirect(url_for("index"))
     return render_template("create_group.html", user=user, friends=friends, active_nav="chats")
 
@@ -423,8 +458,8 @@ def create_group():
 @app.route("/groups/<int:room_id>/delete", methods=["POST"])
 @app.route("/groups/<int:room_id>/manage", methods=["POST"])
 @login_required
-def group_readonly_action(room_id):
-    flash("Read-only mode: group changes are not saved.")
+def group_action(room_id):
+    flash("Group changes are not saved to Neon.")
     return redirect(url_for("chat_room", room_id=room_id))
 
 
@@ -516,6 +551,28 @@ def chat_room(room_id):
             "reply_sender_name": rep_sender.username if rep_sender else "User",
         })
 
+    for item in EPHEMERAL_MESSAGES.get(active_room.id, []):
+        if search_q and search_q.lower() not in (item.get("body") or "").lower():
+            continue
+        muted_sender = item["sender_id"] in muted_user_ids
+        sender_obj = users_cache.get(item["sender_id"]) or db.session.get(User, item["sender_id"])
+        messages_view.append({
+            "id": item["id"],
+            "sender": sender_obj,
+            "body": "[Muted]" if muted_sender else (item["body"] or ""),
+            "msg_type": item["msg_type"],
+            "file_filename": None,
+            "original_filename": None if muted_sender else item["original_filename"],
+            "media_url": "",
+            "is_image": False,
+            "created_iso": iso_utc(item["created_at"]),
+            "muted": muted_sender,
+            "is_read": False,
+            "can_delete": False,
+            "reply_to": None,
+            "reply_sender_name": "User",
+        })
+
     return render_template(
         "chat_room.html",
         user=user,
@@ -555,9 +612,17 @@ def api_messages(room_id):
         return jsonify({"error": "Forbidden"}), 403
 
     after_id = request.args.get("after_id", 0, type=int)
-    new_msgs = Message.query.filter(Message.room_id == room_id, Message.id > after_id).order_by(Message.id.asc()).all()
+    new_msgs = (
+        Message.query.filter(Message.room_id == room_id, Message.id > after_id).order_by(Message.id.asc()).all()
+        if after_id >= 0
+        else []
+    )
+    ephemeral_new = [
+        item for item in EPHEMERAL_MESSAGES.get(room_id, []) if item["id"] < 0 and item["id"] != after_id
+    ] if after_id == 0 else []
+
     muted_user_ids = {r.friend_id for r in Friendship.query.filter_by(user_id=user.id, muted=True).all()}
-    sender_ids = {m.sender_id for m in new_msgs}
+    sender_ids = {m.sender_id for m in new_msgs} | {item["sender_id"] for item in ephemeral_new} | {user.id}
     users_cache = {u.id: u for u in User.query.filter(User.id.in_(sender_ids)).all()} if sender_ids else {}
 
     other_online = None
@@ -569,8 +634,11 @@ def api_messages(room_id):
             if other_u:
                 other_online = bool(other_u.is_online)
 
+    serialized = [serialize_db_message(m, user.id, muted_user_ids, users_cache) for m in new_msgs]
+    serialized.extend(serialize_ephemeral_message(item, user.id, muted_user_ids, users_cache) for item in ephemeral_new)
+
     return jsonify({
-        "messages": [serialize_message(m, user.id, muted_user_ids, users_cache) for m in new_msgs],
+        "messages": serialized,
         "read_statuses": {},
         "other_online": other_online,
         "deleted_ids": [],
@@ -581,32 +649,84 @@ def api_messages(room_id):
 @app.route("/messages/send/<int:room_id>", methods=["POST"])
 @login_required
 def send_message(room_id):
+    user = current_user()
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
-    # Validate upload size up to 100 MB, then discard without storing anywhere
-    for field_name in ("voice_data", "attachment"):
-        f = request.files.get(field_name)
-        if f and f.filename:
-            raw = f.read()
-            if len(raw) > MAX_UPLOAD_BYTES:
-                return (jsonify({"error": "File exceeds 100 MB limit."}), 413) if is_ajax else redirect(
-                    url_for("chat_room", room_id=room_id)
-                )
-    msg_err = "Read-only mode: messages and files are not stored."
+
+    if GroupBan.query.filter_by(room_id=room_id, user_id=user.id).first() or not ChatMember.query.filter_by(
+        room_id=room_id, user_id=user.id
+    ).first():
+        return (jsonify({"error": "Forbidden"}), 403) if is_ajax else redirect(url_for("index"))
+
+    body = (request.form.get("body") or "").strip()
+    msg_type = "text"
+    original_filename = ""
+
+    # Read and validate uploads up to 100 MB in memory, then discard without saving
+    voice_file = request.files.get("voice_data")
+    attachment_file = request.files.get("attachment")
+
+    if voice_file and voice_file.filename:
+        raw_voice = voice_file.read()
+        if len(raw_voice) > MAX_UPLOAD_BYTES:
+            return (jsonify({"error": "File exceeds 100 MB limit."}), 413) if is_ajax else redirect(
+                url_for("chat_room", room_id=room_id)
+            )
+        msg_type = "voice"
+        original_filename = voice_file.filename or f"voice-{uuid.uuid4().hex[:8]}.webm"
+    elif attachment_file and attachment_file.filename:
+        raw_att = attachment_file.read()
+        if len(raw_att) > MAX_UPLOAD_BYTES:
+            return (jsonify({"error": "File exceeds 100 MB limit."}), 413) if is_ajax else redirect(
+                url_for("chat_room", room_id=room_id)
+            )
+        msg_type = "file"
+        original_filename = attachment_file.filename
+
+    if not body and msg_type == "text":
+        if is_ajax:
+            return jsonify({"error": "Message cannot be empty."}), 400
+        return redirect(url_for("chat_room", room_id=room_id))
+
+    reply_info = None
+    reply_to_id = request.form.get("reply_to_id", type=int)
+    if reply_to_id:
+        rep_msg = db.session.get(Message, reply_to_id)
+        if rep_msg and rep_msg.room_id == room_id:
+            reply_info = {
+                "id": rep_msg.id,
+                "sender_name": rep_msg.sender.username if rep_msg.sender else "User",
+                "body": rep_msg.body or rep_msg.original_filename or "Attachment",
+            }
+
+    item = {
+        "id": next_ephemeral_id(),
+        "room_id": room_id,
+        "sender_id": user.id,
+        "body": body,
+        "msg_type": msg_type,
+        "original_filename": original_filename,
+        "reply_to": reply_info,
+        "created_at": datetime.utcnow(),
+    }
+    EPHEMERAL_MESSAGES.setdefault(room_id, []).append(item)
+
     if is_ajax:
-        return jsonify({"error": msg_err}), 403
-    flash(msg_err)
+        muted_user_ids = {r.friend_id for r in Friendship.query.filter_by(user_id=user.id, muted=True).all()}
+        return jsonify({
+            "ok": True,
+            "message": serialize_ephemeral_message(item, user.id, muted_user_ids, {user.id: user}),
+        })
     return redirect(url_for("chat_room", room_id=room_id))
 
 
 @app.route("/messages/delete/<int:message_id>", methods=["POST"])
 @app.route("/messages/forward/<int:message_id>", methods=["POST"])
 @login_required
-def message_readonly_action(message_id):
+def message_action(message_id):
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
-    msg_err = "Read-only mode: messages cannot be modified."
     if is_ajax:
-        return jsonify({"error": msg_err}), 403
-    flash(msg_err)
+        return jsonify({"ok": True, "note": "Changes are not saved to Neon."})
+    flash("Message changes are not saved to Neon.")
     return redirect(url_for("index"))
 
 
