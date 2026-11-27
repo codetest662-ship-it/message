@@ -1,8 +1,10 @@
+import mimetypes
 import os
 import time
 import uuid
 from datetime import datetime, timedelta
 from functools import wraps
+from pathlib import Path
 
 from flask import (
     Flask,
@@ -12,51 +14,56 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_from_directory,
     session,
     url_for,
 )
 from flask_sqlalchemy import SQLAlchemy
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from sqlalchemy import event
 from werkzeug.security import check_password_hash
+from werkzeug.utils import secure_filename
 
-MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB (checked in memory, never saved)
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
+BASE_DIR = Path(__file__).resolve().parent
+LOCAL_UPLOAD_DIR = Path(os.environ.get("LOCAL_UPLOAD_DIR", BASE_DIR / "uploads" / "local_pg"))
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change-this-secret-key")
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
-db_url = os.environ.get("DATABASE_URL")
-if not db_url:
-    raise RuntimeError("DATABASE_URL is required to read existing Neon data.")
+# 1) Neon connection: READ-ONLY history & account/room lookup (never written to)
+neon_url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+if not neon_url:
+    raise RuntimeError("NEON_DATABASE_URL (or DATABASE_URL) is required to read existing Neon data.")
 
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
-if db_url.startswith("postgresql://"):
-    db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+if neon_url.startswith("postgres://"):
+    neon_url = neon_url.replace("postgres://", "postgresql://", 1)
+if neon_url.startswith("postgresql://"):
+    neon_url = neon_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
-app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+app.config["SQLALCHEMY_DATABASE_URI"] = neon_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_pre_ping": True,
     "connect_args": {"options": "-c default_transaction_read_only=on"},
 }
 
+# 2) Secondary laptop PostgreSQL connection: writable target for all new text & files
+LOCAL_PG_HOST = os.environ.get("LOCAL_PG_HOST", "192.168.18.100")
+LOCAL_PG_PORT = int(os.environ.get("LOCAL_PG_PORT", "5432"))
+LOCAL_PG_DB = os.environ.get("LOCAL_PG_DB", "messenger_db")
+LOCAL_PG_USER = os.environ.get("LOCAL_PG_USER", "postgres")
+LOCAL_PG_PASSWORD = os.environ.get("LOCAL_PG_PASSWORD", "Farhan@12")
+
 db = SQLAlchemy(app)
 TYPING_STATE = {}
-# Ephemeral in-memory messages per room (never saved to Neon or disk)
-EPHEMERAL_MESSAGES = {}
-_EPHEMERAL_ID = -1
-
-
-def next_ephemeral_id():
-    global _EPHEMERAL_ID
-    _EPHEMERAL_ID -= 1
-    return _EPHEMERAL_ID
 
 
 @event.listens_for(db.session, "before_flush")
 def _prevent_neon_writes(sess, flush_context, instances):
-    # Discard any pending ORM mutations instead of flushing them to Neon
+    # Strictly block any ORM flush against Neon
     for obj in list(sess.new):
         sess.expunge(obj)
     for obj in list(sess.dirty):
@@ -65,7 +72,143 @@ def _prevent_neon_writes(sess, flush_context, instances):
         sess.expunge(obj)
 
 
-# --- Models (matches existing tables in Neon) ---
+def get_local_pg_conn():
+    """Connect to PostgreSQL running on the secondary laptop (192.168.18.100)."""
+    return psycopg2.connect(
+        host=LOCAL_PG_HOST,
+        port=LOCAL_PG_PORT,
+        dbname=LOCAL_PG_DB,
+        user=LOCAL_PG_USER,
+        password=LOCAL_PG_PASSWORD,
+    )
+
+
+def ensure_local_schema_and_refs(user, room):
+    """Ensure local tables exist and mirror referenced user/room IDs for foreign keys."""
+    LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    with get_local_pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS "user" (
+                    id INTEGER PRIMARY KEY,
+                    username VARCHAR(80) NOT NULL,
+                    email VARCHAR(120) NOT NULL,
+                    friend_number VARCHAR(12) NOT NULL DEFAULT '0000000000',
+                    bio VARCHAR(300) NOT NULL DEFAULT '',
+                    pfp_filename VARCHAR(255),
+                    pfp_data TEXT,
+                    last_seen TIMESTAMP
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_room (
+                    id INTEGER PRIMARY KEY,
+                    name VARCHAR(120),
+                    is_group BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_by INTEGER NOT NULL
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS message (
+                    id SERIAL PRIMARY KEY,
+                    room_id INTEGER NOT NULL REFERENCES chat_room(id),
+                    sender_id INTEGER NOT NULL REFERENCES "user"(id),
+                    body TEXT,
+                    msg_type VARCHAR(20) NOT NULL DEFAULT 'text',
+                    file_filename VARCHAR(255),
+                    original_filename VARCHAR(255),
+                    file_mime VARCHAR(120),
+                    reply_to_id INTEGER REFERENCES message(id),
+                    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            if user:
+                cur.execute(
+                    """
+                    INSERT INTO "user" (id, username, email, friend_number, bio, pfp_filename, pfp_data, last_seen)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING;
+                    """,
+                    (
+                        user.id,
+                        user.username,
+                        user.email,
+                        user.friend_number or "0000000000",
+                        user.bio or "",
+                        user.pfp_filename,
+                        user.pfp_data,
+                        user.last_seen,
+                    ),
+                )
+            if room:
+                cur.execute(
+                    """
+                    INSERT INTO chat_room (id, name, is_group, created_by)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING;
+                    """,
+                    (room.id, room.name, bool(room.is_group), room.created_by),
+                )
+
+
+def save_uploaded_bytes(raw_bytes, original_name, fallback_ext=".bin"):
+    """Save file bytes to local disk and return (stored_filename, clean_original_name, mime_type)."""
+    LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    clean_orig = secure_filename(original_name or "") or f"file{fallback_ext}"
+    ext = Path(clean_orig).suffix or fallback_ext
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    target_path = LOCAL_UPLOAD_DIR / stored_name
+    with open(target_path, "wb") as f:
+        f.write(raw_bytes)
+    mime_type = mimetypes.guess_type(clean_orig)[0] or "application/octet-stream"
+    return stored_name, clean_orig, mime_type
+
+
+def fetch_local_messages(room_id, after_id=0, search_q=""):
+    """Read saved messages and files from the secondary laptop's PostgreSQL."""
+    try:
+        with get_local_pg_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                sql = """
+                    SELECT
+                        m.id,
+                        m.room_id,
+                        m.sender_id,
+                        COALESCE(u.username, 'User') AS sender_name,
+                        u.pfp_data AS sender_avatar,
+                        m.body,
+                        m.msg_type,
+                        m.file_filename,
+                        m.original_filename,
+                        m.file_mime,
+                        m.reply_to_id,
+                        m.is_read,
+                        m.created_at
+                    FROM message m
+                    LEFT JOIN "user" u ON u.id = m.sender_id
+                    WHERE m.room_id = %s AND m.id > %s
+                """
+                params = [room_id, after_id]
+                if search_q:
+                    sql += " AND (m.body ILIKE %s OR m.original_filename ILIKE %s)"
+                    like_q = f"%{search_q}%"
+                    params.extend([like_q, like_q])
+                sql += " ORDER BY m.id ASC;"
+                cur.execute(sql, params)
+                return cur.fetchall()
+    except psycopg2.Error as exc:
+        app.logger.warning("Local PostgreSQL read failed: %s", exc)
+        return []
+
+
+# --- Models (matches existing tables in Neon; read-only) ---
 class User(db.Model):
     __tablename__ = "user"
     id = db.Column(db.Integer, primary_key=True)
@@ -176,6 +319,8 @@ def login_required(fn):
 def iso_utc(dt):
     if not dt:
         return ""
+    if isinstance(dt, str):
+        return dt
     return dt.replace(microsecond=0).isoformat() + "Z"
 
 
@@ -214,9 +359,11 @@ def get_friends_data(user_id):
         if r.user_id not in friend_ids_ordered and r.user_id != user_id:
             friend_ids_ordered.append(r.user_id)
 
-    friend_users_by_id = {
-        u.id: u for u in User.query.filter(User.id.in_(friend_ids_ordered)).all()
-    } if friend_ids_ordered else {}
+    friend_users_by_id = (
+        {u.id: u for u in User.query.filter(User.id.in_(friend_ids_ordered)).all()}
+        if friend_ids_ordered
+        else {}
+    )
     friends = [friend_users_by_id[fid] for fid in friend_ids_ordered if fid in friend_users_by_id]
     return friends, rel_map, muted_user_ids, friend_users_by_id
 
@@ -226,9 +373,11 @@ def get_user_rooms_sidebar(user_id, extra_users_by_id=None):
     my_memberships = ChatMember.query.filter_by(user_id=user_id).all()
     my_room_ids = [m.room_id for m in my_memberships]
 
-    rooms_by_id = {
-        r.id: r for r in ChatRoom.query.filter(ChatRoom.id.in_(my_room_ids)).all()
-    } if my_room_ids else {}
+    rooms_by_id = (
+        {r.id: r for r in ChatRoom.query.filter(ChatRoom.id.in_(my_room_ids)).all()}
+        if my_room_ids
+        else {}
+    )
 
     all_room_members = ChatMember.query.filter(ChatMember.room_id.in_(my_room_ids)).all() if my_room_ids else []
     other_user_id_by_room = {}
@@ -272,66 +421,72 @@ def get_user_rooms_sidebar(user_id, extra_users_by_id=None):
     return rooms_sidebar, rooms_by_id, other_user_id_by_room, users_cache
 
 
-def serialize_db_message(msg, user_id, muted_user_ids, users_cache):
+def build_neon_message_view(msg, muted_user_ids, users_cache):
     muted_sender = msg.sender_id in muted_user_ids
-    sender = users_cache.get(msg.sender_id) or msg.sender
-    sender_name = sender.username if sender else ""
-
-    reply_info = None
-    if msg.reply_to and not muted_sender:
-        rep_sender = users_cache.get(msg.reply_to.sender_id) or msg.reply_to.sender
-        reply_info = {
-            "id": msg.reply_to.id,
-            "sender_name": rep_sender.username if rep_sender else "User",
-            "body": msg.reply_to.body or msg.reply_to.original_filename or "Attachment",
-        }
-
+    sender_obj = users_cache.get(msg.sender_id) or msg.sender
+    rep_sender = (users_cache.get(msg.reply_to.sender_id) or msg.reply_to.sender) if msg.reply_to else None
+    mime_type = msg.file_mime or ""
+    is_image = bool(not muted_sender and msg.file_filename and mime_type.startswith("image/"))
     return {
-        "id": msg.id,
-        "sender_id": msg.sender_id,
-        "sender_name": sender_name,
-        "sender_initial": sender_name[0].upper() if sender_name else "?",
-        "sender_avatar": sender.avatar_src if sender else "",
-        "sender_online": bool(sender.is_online) if sender else False,
-        "created_iso": iso_utc(msg.created_at),
+        "id": -abs(msg.id),  # Negative ID distinguishes Neon history from local PostgreSQL IDs
+        "sender": sender_obj,
         "body": "[Muted]" if muted_sender else (msg.body or ""),
         "msg_type": msg.msg_type or "text",
-        "file_filename": None,
-        "original_filename": None if muted_sender else (msg.original_filename or ""),
-        "is_image": False,
-        "file_url": "",
-        "download_url": "",
+        "file_filename": None if muted_sender else msg.file_filename,
+        "original_filename": None if muted_sender else msg.original_filename,
+        "media_url": "",
+        "is_image": is_image,
+        "created_iso": iso_utc(msg.created_at),
+        "muted": muted_sender,
         "is_read": bool(msg.is_read),
         "can_delete": False,
-        "status_label": ("Seen" if msg.is_read else "Delivered") if msg.sender_id == user_id else "",
-        "reply_to": reply_info,
+        "reply_to": msg.reply_to,
+        "reply_sender_name": rep_sender.username if rep_sender else "User",
     }
 
 
-def serialize_ephemeral_message(item, user_id, muted_user_ids, users_cache):
-    muted_sender = item["sender_id"] in muted_user_ids
-    sender = users_cache.get(item["sender_id"])
-    sender_name = sender.username if sender else "User"
+def serialize_local_message(row, user_id, muted_user_ids, users_cache):
+    muted_sender = row["sender_id"] in muted_user_ids
+    sender = users_cache.get(row["sender_id"])
+    sender_name = sender.username if sender else (row.get("sender_name") or "User")
+    stored_file = row.get("file_filename") or ""
+    mime_type = row.get("file_mime") or ""
+    is_image = bool(not muted_sender and stored_file and mime_type.startswith("image/"))
+    file_url = url_for("serve_local_upload", filename=stored_file) if (not muted_sender and stored_file) else ""
+    download_url = (
+        url_for("serve_local_upload", filename=stored_file, download=1)
+        if (not muted_sender and stored_file)
+        else ""
+    )
+
     return {
-        "id": item["id"],
-        "sender_id": item["sender_id"],
+        "id": row["id"],
+        "sender_id": row["sender_id"],
         "sender_name": sender_name,
         "sender_initial": sender_name[0].upper() if sender_name else "?",
-        "sender_avatar": sender.avatar_src if sender else "",
+        "sender_avatar": (sender.avatar_src if sender else row.get("sender_avatar")) or "",
         "sender_online": bool(sender.is_online) if sender else False,
-        "created_iso": iso_utc(item["created_at"]),
-        "body": "[Muted]" if muted_sender else (item["body"] or ""),
-        "msg_type": item["msg_type"],
-        "file_filename": None,
-        "original_filename": None if muted_sender else (item["original_filename"] or ""),
-        "is_image": False,
-        "file_url": "",
-        "download_url": "",
-        "is_read": False,
+        "created_iso": iso_utc(row.get("created_at")),
+        "body": "[Muted]" if muted_sender else (row.get("body") or ""),
+        "msg_type": row.get("msg_type") or "text",
+        "file_filename": None if muted_sender else (stored_file or None),
+        "original_filename": None if muted_sender else (row.get("original_filename") or ""),
+        "is_image": is_image,
+        "file_url": file_url,
+        "download_url": download_url,
+        "is_read": bool(row.get("is_read")),
         "can_delete": False,
-        "status_label": "Sent (not saved to Neon)" if item["sender_id"] == user_id else "",
-        "reply_to": item.get("reply_to"),
+        "status_label": ("Seen" if row.get("is_read") else "Saved to PC") if row["sender_id"] == user_id else "",
+        "reply_to": None,
     }
+
+
+@app.route("/uploads/local/<path:filename>")
+@login_required
+def serve_local_upload(filename):
+    safe_name = Path(filename).name
+    as_attachment = bool(request.args.get("download"))
+    return send_from_directory(LOCAL_UPLOAD_DIR, safe_name, as_attachment=as_attachment)
 
 
 @app.route("/welcome")
@@ -524,50 +679,35 @@ def chat_room(room_id):
     is_group_admin = bool(active_room.is_group and active_room.created_by == user.id)
     my_timed_out = bool(membership.timeout_until and membership.timeout_until > now)
 
-    q = Message.query.filter_by(room_id=active_room.id)
+    # 1) Load all historical Neon messages (read-only)
+    neon_q = Message.query.filter_by(room_id=active_room.id)
     if search_q:
-        q = q.filter(Message.body.ilike(f"%{search_q}%"))
-    raw_msgs = q.order_by(Message.id.asc()).all()
+        like_q = f"%{search_q}%"
+        neon_q = neon_q.filter((Message.body.ilike(like_q)) | (Message.original_filename.ilike(like_q)))
+    neon_msgs = neon_q.order_by(Message.id.asc()).all()
+    messages_view = [build_neon_message_view(msg, muted_user_ids, users_cache) for msg in neon_msgs]
 
-    messages_view = []
-    for msg in raw_msgs:
-        muted_sender = msg.sender_id in muted_user_ids
-        sender_obj = users_cache.get(msg.sender_id) or msg.sender
-        rep_sender = (users_cache.get(msg.reply_to.sender_id) or msg.reply_to.sender) if msg.reply_to else None
+    # 2) Append all newly saved messages/files from secondary laptop PostgreSQL
+    local_rows = fetch_local_messages(active_room.id, after_id=0, search_q=search_q)
+    for row in local_rows:
+        muted_sender = row["sender_id"] in muted_user_ids
+        sender_obj = users_cache.get(row["sender_id"])
+        stored_file = row.get("file_filename") or ""
+        mime_type = row.get("file_mime") or ""
+        is_image = bool(not muted_sender and stored_file and mime_type.startswith("image/"))
+        media_url = url_for("serve_local_upload", filename=stored_file) if (not muted_sender and stored_file) else ""
         messages_view.append({
-            "id": msg.id,
+            "id": row["id"],
             "sender": sender_obj,
-            "body": "[Muted]" if muted_sender else (msg.body or ""),
-            "msg_type": msg.msg_type,
-            "file_filename": None,
-            "original_filename": None if muted_sender else msg.original_filename,
-            "media_url": "",
-            "is_image": False,
-            "created_iso": iso_utc(msg.created_at),
+            "body": "[Muted]" if muted_sender else (row.get("body") or ""),
+            "msg_type": row.get("msg_type") or "text",
+            "file_filename": None if muted_sender else (stored_file or None),
+            "original_filename": None if muted_sender else row.get("original_filename"),
+            "media_url": media_url,
+            "is_image": is_image,
+            "created_iso": iso_utc(row.get("created_at")),
             "muted": muted_sender,
-            "is_read": bool(msg.is_read),
-            "can_delete": False,
-            "reply_to": msg.reply_to,
-            "reply_sender_name": rep_sender.username if rep_sender else "User",
-        })
-
-    for item in EPHEMERAL_MESSAGES.get(active_room.id, []):
-        if search_q and search_q.lower() not in (item.get("body") or "").lower():
-            continue
-        muted_sender = item["sender_id"] in muted_user_ids
-        sender_obj = users_cache.get(item["sender_id"]) or db.session.get(User, item["sender_id"])
-        messages_view.append({
-            "id": item["id"],
-            "sender": sender_obj,
-            "body": "[Muted]" if muted_sender else (item["body"] or ""),
-            "msg_type": item["msg_type"],
-            "file_filename": None,
-            "original_filename": None if muted_sender else item["original_filename"],
-            "media_url": "",
-            "is_image": False,
-            "created_iso": iso_utc(item["created_at"]),
-            "muted": muted_sender,
-            "is_read": False,
+            "is_read": bool(row.get("is_read")),
             "can_delete": False,
             "reply_to": None,
             "reply_sender_name": "User",
@@ -612,17 +752,12 @@ def api_messages(room_id):
         return jsonify({"error": "Forbidden"}), 403
 
     after_id = request.args.get("after_id", 0, type=int)
-    new_msgs = (
-        Message.query.filter(Message.room_id == room_id, Message.id > after_id).order_by(Message.id.asc()).all()
-        if after_id >= 0
-        else []
-    )
-    ephemeral_new = [
-        item for item in EPHEMERAL_MESSAGES.get(room_id, []) if item["id"] < 0 and item["id"] != after_id
-    ] if after_id == 0 else []
+    # Only poll local PostgreSQL for new messages (after_id < 0 means client only has Neon history)
+    local_after = max(0, after_id)
+    local_rows = fetch_local_messages(room_id, after_id=local_after)
 
     muted_user_ids = {r.friend_id for r in Friendship.query.filter_by(user_id=user.id, muted=True).all()}
-    sender_ids = {m.sender_id for m in new_msgs} | {item["sender_id"] for item in ephemeral_new} | {user.id}
+    sender_ids = {row["sender_id"] for row in local_rows} | {user.id}
     users_cache = {u.id: u for u in User.query.filter(User.id.in_(sender_ids)).all()} if sender_ids else {}
 
     other_online = None
@@ -634,8 +769,7 @@ def api_messages(room_id):
             if other_u:
                 other_online = bool(other_u.is_online)
 
-    serialized = [serialize_db_message(m, user.id, muted_user_ids, users_cache) for m in new_msgs]
-    serialized.extend(serialize_ephemeral_message(item, user.id, muted_user_ids, users_cache) for item in ephemeral_new)
+    serialized = [serialize_local_message(row, user.id, muted_user_ids, users_cache) for row in local_rows]
 
     return jsonify({
         "messages": serialized,
@@ -657,11 +791,13 @@ def send_message(room_id):
     ).first():
         return (jsonify({"error": "Forbidden"}), 403) if is_ajax else redirect(url_for("index"))
 
+    room = db.session.get(ChatRoom, room_id)
     body = (request.form.get("body") or "").strip()
     msg_type = "text"
+    stored_filename = None
     original_filename = ""
+    file_mime = None
 
-    # Read and validate uploads up to 100 MB in memory, then discard without saving
     voice_file = request.files.get("voice_data")
     attachment_file = request.files.get("attachment")
 
@@ -672,7 +808,9 @@ def send_message(room_id):
                 url_for("chat_room", room_id=room_id)
             )
         msg_type = "voice"
-        original_filename = voice_file.filename or f"voice-{uuid.uuid4().hex[:8]}.webm"
+        stored_filename, original_filename, file_mime = save_uploaded_bytes(
+            raw_voice, voice_file.filename, fallback_ext=".webm"
+        )
     elif attachment_file and attachment_file.filename:
         raw_att = attachment_file.read()
         if len(raw_att) > MAX_UPLOAD_BYTES:
@@ -680,41 +818,68 @@ def send_message(room_id):
                 url_for("chat_room", room_id=room_id)
             )
         msg_type = "file"
-        original_filename = attachment_file.filename
+        stored_filename, original_filename, file_mime = save_uploaded_bytes(
+            raw_att, attachment_file.filename, fallback_ext=".bin"
+        )
 
     if not body and msg_type == "text":
         if is_ajax:
             return jsonify({"error": "Message cannot be empty."}), 400
         return redirect(url_for("chat_room", room_id=room_id))
 
-    reply_info = None
     reply_to_id = request.form.get("reply_to_id", type=int)
-    if reply_to_id:
-        rep_msg = db.session.get(Message, reply_to_id)
-        if rep_msg and rep_msg.room_id == room_id:
-            reply_info = {
-                "id": rep_msg.id,
-                "sender_name": rep_msg.sender.username if rep_msg.sender else "User",
-                "body": rep_msg.body or rep_msg.original_filename or "Attachment",
-            }
 
-    item = {
-        "id": next_ephemeral_id(),
-        "room_id": room_id,
-        "sender_id": user.id,
-        "body": body,
-        "msg_type": msg_type,
-        "original_filename": original_filename,
-        "reply_to": reply_info,
-        "created_at": datetime.utcnow(),
-    }
-    EPHEMERAL_MESSAGES.setdefault(room_id, []).append(item)
+    try:
+        ensure_local_schema_and_refs(user, room)
+        with get_local_pg_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                valid_reply_id = None
+                if reply_to_id and reply_to_id > 0:
+                    cur.execute("SELECT id FROM message WHERE id = %s AND room_id = %s;", (reply_to_id, room_id))
+                    rep = cur.fetchone()
+                    if rep:
+                        valid_reply_id = rep["id"]
+
+                cur.execute(
+                    """
+                    INSERT INTO message (
+                        room_id, sender_id, body, msg_type,
+                        file_filename, original_filename, file_mime,
+                        reply_to_id, is_read, created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s)
+                    RETURNING
+                        id, room_id, sender_id, body, msg_type,
+                        file_filename, original_filename, file_mime,
+                        reply_to_id, is_read, created_at;
+                    """,
+                    (
+                        room_id,
+                        user.id,
+                        body,
+                        msg_type,
+                        stored_filename,
+                        original_filename,
+                        file_mime,
+                        valid_reply_id,
+                        datetime.utcnow(),
+                    ),
+                )
+                saved_row = cur.fetchone()
+                saved_row["sender_name"] = user.username
+                saved_row["sender_avatar"] = user.avatar_src
+    except psycopg2.Error as exc:
+        err_msg = f"Failed to save to secondary laptop PostgreSQL: {exc}"
+        if is_ajax:
+            return jsonify({"error": err_msg}), 500
+        flash(err_msg)
+        return redirect(url_for("chat_room", room_id=room_id))
 
     if is_ajax:
         muted_user_ids = {r.friend_id for r in Friendship.query.filter_by(user_id=user.id, muted=True).all()}
         return jsonify({
             "ok": True,
-            "message": serialize_ephemeral_message(item, user.id, muted_user_ids, {user.id: user}),
+            "message": serialize_local_message(saved_row, user.id, muted_user_ids, {user.id: user}),
         })
     return redirect(url_for("chat_room", room_id=room_id))
 
