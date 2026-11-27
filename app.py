@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
+from types import SimpleNamespace
 
 from flask import (
     Flask,
@@ -80,6 +81,7 @@ def get_local_pg_conn():
         dbname=LOCAL_PG_DB,
         user=LOCAL_PG_USER,
         password=LOCAL_PG_PASSWORD,
+        connect_timeout=5,
     )
 
 
@@ -428,7 +430,7 @@ def build_neon_message_view(msg, muted_user_ids, users_cache):
     mime_type = msg.file_mime or ""
     is_image = bool(not muted_sender and msg.file_filename and mime_type.startswith("image/"))
     return {
-        "id": -abs(msg.id),  # Negative ID distinguishes Neon history from local PostgreSQL IDs
+        "id": -abs(msg.id),
         "sender": sender_obj,
         "body": "[Muted]" if muted_sender else (msg.body or ""),
         "msg_type": msg.msg_type or "text",
@@ -691,7 +693,14 @@ def chat_room(room_id):
     local_rows = fetch_local_messages(active_room.id, after_id=0, search_q=search_q)
     for row in local_rows:
         muted_sender = row["sender_id"] in muted_user_ids
-        sender_obj = users_cache.get(row["sender_id"])
+        sender_obj = users_cache.get(row["sender_id"]) or db.session.get(User, row["sender_id"])
+        if not sender_obj:
+            sender_obj = SimpleNamespace(
+                id=row["sender_id"],
+                username=row.get("sender_name") or "User",
+                avatar_src=row.get("sender_avatar"),
+                is_online=False,
+            )
         stored_file = row.get("file_filename") or ""
         mime_type = row.get("file_mime") or ""
         is_image = bool(not muted_sender and stored_file and mime_type.startswith("image/"))
@@ -752,7 +761,6 @@ def api_messages(room_id):
         return jsonify({"error": "Forbidden"}), 403
 
     after_id = request.args.get("after_id", 0, type=int)
-    # Only poll local PostgreSQL for new messages (after_id < 0 means client only has Neon history)
     local_after = max(0, after_id)
     local_rows = fetch_local_messages(room_id, after_id=local_after)
 
