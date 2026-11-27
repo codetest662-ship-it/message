@@ -762,7 +762,7 @@
     </div>
 
     {% if is_group_admin %}
-      <form method="POST" action="{{ url_for('manage_group', room_id=active_room.id) }}" style="display: flex; gap: 6px; margin-bottom: 12px;">
+      <form method="POST" action="{{ url_for('group_action', room_id=active_room.id) }}" style="display: flex; gap: 6px; margin-bottom: 12px;">
         <input type="hidden" name="action" value="rename" />
         <input type="text" name="group_name" value="{{ active_room.name }}" style="flex: 1; padding: 7px 10px; border-radius: 8px; border: 1px solid #d1d5db; font-size: 12px;" required />
         <button type="submit" class="send-pill-btn">Save Name</button>
@@ -789,7 +789,7 @@
           </div>
 
           {% if is_group_admin and not mem.is_admin %}
-            <form method="POST" action="{{ url_for('manage_group', room_id=active_room.id) }}" style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
+            <form method="POST" action="{{ url_for('group_action', room_id=active_room.id) }}" style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
               <input type="hidden" name="target_user_id" value="{{ mem.user.id }}" />
               <button type="submit" name="action" value="transfer_admin" class="msg-act-btn">Make Admin</button>
               {% if mem.is_timed_out %}
@@ -812,7 +812,7 @@
         {% for bu in banned_users_view %}
           <div class="member-row">
             <span>{{ bu.username }}</span>
-            <form method="POST" action="{{ url_for('manage_group', room_id=active_room.id) }}" style="display: inline;">
+            <form method="POST" action="{{ url_for('group_action', room_id=active_room.id) }}" style="display: inline;">
               <input type="hidden" name="target_user_id" value="{{ bu.id }}" />
               <button type="submit" name="action" value="unban" class="msg-act-btn">Unban</button>
             </form>
@@ -822,11 +822,13 @@
     {% endif %}
 
     <div style="display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap;">
-      <form method="POST" action="{{ url_for('leave_group', room_id=active_room.id) }}" style="flex: 1;">
+      <form method="POST" action="{{ url_for('group_action', room_id=active_room.id) }}" style="flex: 1;">
+        <input type="hidden" name="action" value="leave" />
         <button type="submit" class="send-pill-btn" style="width: 100%; background-color: #4b5563;">Leave Group</button>
       </form>
       {% if is_group_admin %}
-        <form method="POST" action="{{ url_for('delete_group', room_id=active_room.id) }}" style="flex: 1;">
+        <form method="POST" action="{{ url_for('group_action', room_id=active_room.id) }}" style="flex: 1;">
+          <input type="hidden" name="action" value="delete" />
           <button type="submit" class="danger-pill-btn" style="width: 100%;">Delete Group</button>
         </form>
       {% endif %}
