@@ -1,5 +1,6 @@
 import mimetypes
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from flask import (
 from flask_sqlalchemy import SQLAlchemy
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.pool import ThreadedConnectionPool
 from sqlalchemy import event
 from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
@@ -61,6 +63,12 @@ LOCAL_PG_PASSWORD = os.environ.get("LOCAL_PG_PASSWORD", "Farhan@12")
 db = SQLAlchemy(app)
 TYPING_STATE = {}
 
+_local_pool = None
+_pool_lock = threading.Lock()
+_schema_ready = False
+_synced_users = set()
+_synced_rooms = set()
+
 
 @event.listens_for(db.session, "before_flush")
 def _prevent_neon_writes(sess, flush_context, instances):
@@ -73,65 +81,151 @@ def _prevent_neon_writes(sess, flush_context, instances):
         sess.expunge(obj)
 
 
+def _get_local_pool():
+    global _local_pool
+    if _local_pool is not None and not _local_pool.closed:
+        return _local_pool
+    with _pool_lock:
+        if _local_pool is None or _local_pool.closed:
+            _local_pool = ThreadedConnectionPool(
+                minconn=1,
+                maxconn=8,
+                host=LOCAL_PG_HOST,
+                port=LOCAL_PG_PORT,
+                dbname=LOCAL_PG_DB,
+                user=LOCAL_PG_USER,
+                password=LOCAL_PG_PASSWORD,
+                connect_timeout=4,
+            )
+    return _local_pool
+
+
+def _reset_local_pool():
+    global _local_pool, _schema_ready
+    with _pool_lock:
+        if _local_pool is not None and not _local_pool.closed:
+            try:
+                _local_pool.closeall()
+            except Exception:
+                pass
+        _local_pool = None
+        _schema_ready = False
+        _synced_users.clear()
+        _synced_rooms.clear()
+
+
+class _LocalConnCtx:
+    """Borrow a pooled connection and return it cleanly; auto-reset pool on broken connection."""
+
+    def __init__(self):
+        self.conn = None
+
+    def __enter__(self):
+        pool = _get_local_pool()
+        self.conn = pool.getconn()
+        try:
+            if self.conn.closed:
+                pool.putconn(self.conn, close=True)
+                _reset_local_pool()
+                self.conn = _get_local_pool().getconn()
+            return self.conn
+        except Exception:
+            if self.conn is not None:
+                try:
+                    pool.putconn(self.conn, close=True)
+                except Exception:
+                    pass
+                self.conn = None
+            raise
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.conn is None:
+            return False
+        pool = _local_pool
+        close_conn = exc_type is psycopg2.OperationalError or exc_type is psycopg2.InterfaceError
+        if exc_type is not None and not close_conn:
+            try:
+                self.conn.rollback()
+            except Exception:
+                close_conn = True
+        if pool is not None and not pool.closed:
+            try:
+                pool.putconn(self.conn, close=close_conn)
+            except Exception:
+                pass
+        if close_conn:
+            _reset_local_pool()
+        return False
+
+
 def get_local_pg_conn():
-    """Connect to PostgreSQL running on the secondary laptop (192.168.18.100)."""
-    return psycopg2.connect(
-        host=LOCAL_PG_HOST,
-        port=LOCAL_PG_PORT,
-        dbname=LOCAL_PG_DB,
-        user=LOCAL_PG_USER,
-        password=LOCAL_PG_PASSWORD,
-        connect_timeout=5,
-    )
+    """Return a context-managed connection from the local PostgreSQL pool."""
+    return _LocalConnCtx()
 
 
 def ensure_local_schema_and_refs(user, room):
-    """Ensure local tables exist and mirror referenced user/room IDs for foreign keys."""
+    """Ensure local tables exist once and mirror user/room IDs only when first seen."""
+    global _schema_ready
     LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    need_user = bool(user and user.id not in _synced_users)
+    need_room = bool(room and room.id not in _synced_rooms)
+    if _schema_ready and not need_user and not need_room:
+        return
+
     with get_local_pg_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS "user" (
-                    id INTEGER PRIMARY KEY,
-                    username VARCHAR(80) NOT NULL,
-                    email VARCHAR(120) NOT NULL,
-                    friend_number VARCHAR(12) NOT NULL DEFAULT '0000000000',
-                    bio VARCHAR(300) NOT NULL DEFAULT '',
-                    pfp_filename VARCHAR(255),
-                    pfp_data TEXT,
-                    last_seen TIMESTAMP
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS chat_room (
-                    id INTEGER PRIMARY KEY,
-                    name VARCHAR(120),
-                    is_group BOOLEAN NOT NULL DEFAULT FALSE,
-                    created_by INTEGER NOT NULL
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS message (
-                    id SERIAL PRIMARY KEY,
-                    room_id INTEGER NOT NULL REFERENCES chat_room(id),
-                    sender_id INTEGER NOT NULL REFERENCES "user"(id),
-                    body TEXT,
-                    msg_type VARCHAR(20) NOT NULL DEFAULT 'text',
-                    file_filename VARCHAR(255),
-                    original_filename VARCHAR(255),
-                    file_mime VARCHAR(120),
-                    reply_to_id INTEGER REFERENCES message(id),
-                    is_read BOOLEAN NOT NULL DEFAULT FALSE,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                """
-            )
-            if user:
+            if not _schema_ready:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS "user" (
+                        id INTEGER PRIMARY KEY,
+                        username VARCHAR(80) NOT NULL,
+                        email VARCHAR(120) NOT NULL,
+                        friend_number VARCHAR(12) NOT NULL DEFAULT '0000000000',
+                        bio VARCHAR(300) NOT NULL DEFAULT '',
+                        pfp_filename VARCHAR(255),
+                        pfp_data TEXT,
+                        last_seen TIMESTAMP
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS chat_room (
+                        id INTEGER PRIMARY KEY,
+                        name VARCHAR(120),
+                        is_group BOOLEAN NOT NULL DEFAULT FALSE,
+                        created_by INTEGER NOT NULL
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS message (
+                        id SERIAL PRIMARY KEY,
+                        room_id INTEGER NOT NULL REFERENCES chat_room(id),
+                        sender_id INTEGER NOT NULL REFERENCES "user"(id),
+                        body TEXT,
+                        msg_type VARCHAR(20) NOT NULL DEFAULT 'text',
+                        file_filename VARCHAR(255),
+                        original_filename VARCHAR(255),
+                        file_mime VARCHAR(120),
+                        reply_to_id INTEGER REFERENCES message(id),
+                        is_read BOOLEAN NOT NULL DEFAULT FALSE,
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_message_room_id
+                    ON message (room_id, id);
+                    """
+                )
+                _schema_ready = True
+
+            if need_user:
                 cur.execute(
                     """
                     INSERT INTO "user" (id, username, email, friend_number, bio, pfp_filename, pfp_data, last_seen)
@@ -149,7 +243,9 @@ def ensure_local_schema_and_refs(user, room):
                         user.last_seen,
                     ),
                 )
-            if room:
+                _synced_users.add(user.id)
+
+            if need_room:
                 cur.execute(
                     """
                     INSERT INTO chat_room (id, name, is_group, created_by)
@@ -158,6 +254,7 @@ def ensure_local_schema_and_refs(user, room):
                     """,
                     (room.id, room.name, bool(room.is_group), room.created_by),
                 )
+                _synced_rooms.add(room.id)
 
 
 def save_uploaded_bytes(raw_bytes, original_name, fallback_ext=".bin"):
@@ -681,15 +778,17 @@ def chat_room(room_id):
     is_group_admin = bool(active_room.is_group and active_room.created_by == user.id)
     my_timed_out = bool(membership.timeout_until and membership.timeout_until > now)
 
-    # 1) Load all historical Neon messages (read-only)
+    # 1) Load historical Neon messages (read-only; cap recent 100 unless searching)
     neon_q = Message.query.filter_by(room_id=active_room.id)
     if search_q:
         like_q = f"%{search_q}%"
         neon_q = neon_q.filter((Message.body.ilike(like_q)) | (Message.original_filename.ilike(like_q)))
-    neon_msgs = neon_q.order_by(Message.id.asc()).all()
+        neon_msgs = neon_q.order_by(Message.id.asc()).all()
+    else:
+        neon_msgs = list(reversed(neon_q.order_by(Message.id.desc()).limit(100).all()))
     messages_view = [build_neon_message_view(msg, muted_user_ids, users_cache) for msg in neon_msgs]
 
-    # 2) Append all newly saved messages/files from secondary laptop PostgreSQL
+    # 2) Append newly saved messages/files from secondary laptop PostgreSQL
     local_rows = fetch_local_messages(active_room.id, after_id=0, search_q=search_q)
     for row in local_rows:
         muted_sender = row["sender_id"] in muted_user_ids
